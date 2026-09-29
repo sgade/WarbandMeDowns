@@ -116,7 +116,16 @@ local function GetHoveredItemLocation(frame)
     end
 
     local location = C_Item.GetItemLocation(guid)
-    if location and location:IsValid() then
+    if not location then
+        return nil
+    end
+
+    -- IsValid() is C_Item.DoesItemExist(self) under the hood, which throws
+    -- rather than returning false for a location that isn't a valid
+    -- "emptiable" kind at this instant - real during rapid item-instance
+    -- churn (e.g. an item-level upgrade recreating the item in its slot).
+    local success, isValid = pcall(location.IsValid, location)
+    if success and isValid then
         return location
     end
 
