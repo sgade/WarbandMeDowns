@@ -86,6 +86,14 @@ local NoClassWantsThis = {}
 SetArmorSubclassClasses(ArmorSubclass.Cosmetic, NoClassWantsThis)
 SetWeaponSubclassClasses(WeaponSubclass.Generic, NoClassWantsThis)
 
+-- Equip locations every class wears regardless of armor type. Necks, rings and
+-- trinkets are already the Generic subclass, but a cloak is Armor/Cloth -
+-- going by its subclass alone, only cloth wearers could ever receive one.
+-- Data.GetEquipClassAndSubclass reports these as Generic for eligibility.
+local ArmorIndependentEquipLocations = {
+    INVTYPE_CLOAK = true,
+}
+
 SetWeaponSubclassClasses(WeaponSubclass.Axe, {"WARRIOR", "PALADIN", "HUNTER", "ROGUE", "SHAMAN", "MONK", "DEMONHUNTER", "DEATHKNIGHT", "EVOKER"})
 SetWeaponSubclassClasses(WeaponSubclass.Axe2H, {"WARRIOR", "PALADIN", "HUNTER", "DEATHKNIGHT", "EVOKER"})
 SetWeaponSubclassClasses(WeaponSubclass.Bow, {"HUNTER"})
@@ -486,6 +494,21 @@ end
 ---@param link ItemInfo
 function Data.GetItemClassAndSubclass(link)
     local info = InstantInfo(link)
+    return info.classID, info.subclassID
+end
+
+---The class and subclass to judge "who can wear this" by. The same as
+---Data.GetItemClassAndSubclass, except that armor worn in an armor-independent
+---slot (a cloak) counts as Generic, the way necks, rings and trinkets already
+---are.
+---@param link ItemInfo
+---@return number? classID
+---@return number? subclassID
+function Data.GetEquipClassAndSubclass(link)
+    local info = InstantInfo(link)
+    if info.classID == ItemClassArmor and ArmorIndependentEquipLocations[info.equipLoc] then
+        return info.classID, ArmorSubclass.Generic
+    end
     return info.classID, info.subclassID
 end
 

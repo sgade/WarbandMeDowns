@@ -233,10 +233,8 @@ local function BuildCandidates(character, entries)
             unresolved = true
         else
             local slots, twoHanded = CandidateSlotsFor(equipLocation)
-            local classID, subclassID = Data.GetItemClassAndSubclass(entry.link)
 
-            if slots and classID and subclassID
-                and Characters.CanCharacterEquipItemClass(character, classID, subclassID) then
+            if slots and Characters.CanCharacterEquipItem(character, entry.link) then
                 table.insert(candidates, {
                     itemLevel = itemLevel,
                     slots = slots,

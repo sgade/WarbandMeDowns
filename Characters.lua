@@ -240,7 +240,10 @@ end
 ---@param itemLink ItemInfo
 ---@return boolean
 function Characters.CanCharacterEquipItem(character, itemLink)
-    local classID, subclassID = Data.GetItemClassAndSubclass(itemLink)
+    local classID, subclassID = Data.GetEquipClassAndSubclass(itemLink)
+    if not classID or not subclassID then
+        return false
+    end
     return Characters.CanCharacterEquipItemClass(character, classID, subclassID)
 end
 
