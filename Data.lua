@@ -357,9 +357,11 @@ Data.ClassID = {
 -- Data.GetActualItemLevel's contract below and the Assignment.lua header).
 -- Caching a nil would freeze an alt's gear as permanently unreadable.
 --
--- Dropped per generation rather than kept for the session: an heirloom's item
--- level scales with the level of the character doing the looking, and
--- PLAYER_LEVEL_UP already drives a recompute.
+-- Kept across recomputes, since a link's facts do not change and re-reading
+-- them for the whole warband on every recompute was most of its cost. The one
+-- exception is an heirloom, whose item level scales with the level of the
+-- character doing the looking, so the cache is dropped on PLAYER_LEVEL_UP (see
+-- Tooltip.lua), on /wmd refresh and on disable.
 
 ---@type table<string, table>
 local ItemInfoCache = {}
@@ -367,11 +369,30 @@ local ItemInfoCache = {}
 ---@type table<string, table>
 local InstantInfoCache = {}
 
----Drops the item metadata memo. Called by WarbandMeDowns.Assignment's
----Recompute() and Reset(), alongside the other per-generation memos.
+-- Items asked about that the client had not cached yet. GET_ITEM_INFO_RECEIVED
+-- fires for every item anything in the client loads; only these ones can change
+-- an answer, so only these mark the engine dirty.
+---@type table<number, boolean>
+local AwaitedItemIDs = {}
+
+---Drops the item metadata memo. Called on PLAYER_LEVEL_UP and by
+---WarbandMeDowns.Assignment's Reset() and user-requested Recompute().
 function Data.ClearItemCache()
     wipe(ItemInfoCache)
     wipe(InstantInfoCache)
+end
+
+---Whether an item the engine needed was still loading when it was asked for.
+---@param itemID number?
+---@return boolean
+function Data.IsAwaitedItem(itemID)
+    return itemID ~= nil and AwaitedItemIDs[itemID] == true
+end
+
+---Forgets which items were loading. Called at the start of every recompute,
+---which asks for everything it needs again.
+function Data.ClearAwaitedItems()
+    wipe(AwaitedItemIDs)
 end
 
 ---C_Item.GetItemInfoInstant's results for a link, memoized. Served off the link
@@ -407,9 +428,13 @@ local function ItemInfo(link)
     end
 
     local name, _, quality, _, _, _, _, _, equipLoc, _, _, _, _, bindType = C_Item.GetItemInfo(link)
+    local itemID = InstantInfo(link).itemID
     if not name then
         -- Not cached client-side yet. Asking was the point - it queues the
         -- load - but the nil must not be remembered.
+        if itemID then
+            AwaitedItemIDs[itemID] = true
+        end
         return nil
     end
 
@@ -422,8 +447,11 @@ local function ItemInfo(link)
     -- the real "is this done loading" signal; treat "not yet" exactly like
     -- the uncached-name case above and let the normal GET_ITEM_INFO_RECEIVED
     -- retry pick it up once it's actually ready.
-    local itemID = InstantInfo(link).itemID
-    if not itemID or not C_Item.IsItemDataCachedByID(itemID) then
+    if not itemID then
+        return nil
+    end
+    if not C_Item.IsItemDataCachedByID(itemID) then
+        AwaitedItemIDs[itemID] = true
         return nil
     end
 
@@ -436,6 +464,8 @@ local function ItemInfo(link)
     -- instead of being frozen as unreadable.
     if itemLevel then
         ItemInfoCache[link] = info
+    else
+        AwaitedItemIDs[itemID] = true
     end
     return info
 end

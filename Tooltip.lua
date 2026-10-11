@@ -25,9 +25,9 @@ function WarbandMeDowns:OnEnable()
 end
 
 function WarbandMeDowns:OnDisable()
-    -- The events registered below and any pending debounce timer are dropped
-    -- for us: AceAddon calls OnEmbedDisable on every embedded library, and
-    -- AceEvent's unregisters everything while AceTimer's cancels everything.
+    -- The events registered below are dropped for us: AceAddon calls
+    -- OnEmbedDisable on every embedded library, and AceEvent's unregisters
+    -- everything.
     WarbandMeDowns.Assignment:Reset()
 
     --@debug@
@@ -64,9 +64,27 @@ function WarbandMeDowns:HookItemTooltips()
 end
 
 ---Any of these means something the engine reads may have changed. They all
----land on the same debounced MarkDirty - which event it was never matters,
----only that the answer might be stale now.
+---land on the same MarkDirty - which event it was never matters, only that
+---the answer might be stale now. That only sets a flag; the recompute waits
+---for the next tooltip that needs it.
 function WarbandMeDowns:OnCacheInvalidated()
+    WarbandMeDowns.Assignment:MarkDirty()
+end
+
+---Fires for every item anything in the client loads - chat links, loot,
+---other addons. Only an item the last recompute was still waiting for can
+---change an answer.
+---@param itemID number
+function WarbandMeDowns:OnItemInfoReceived(_, itemID)
+    if WarbandMeDowns.Data.IsAwaitedItem(itemID) then
+        WarbandMeDowns.Assignment:MarkDirty()
+    end
+end
+
+---An heirloom's item level follows the level of the character looking at it,
+---so the per-link item cache is stale once the level changes.
+function WarbandMeDowns:OnPlayerLevelUp()
+    WarbandMeDowns.Data.ClearItemCache()
     WarbandMeDowns.Assignment:MarkDirty()
 end
 
@@ -74,14 +92,12 @@ function WarbandMeDowns:RegisterCacheInvalidationEvents()
     local events = {
         "BAG_UPDATE_DELAYED",
         "BANKFRAME_CLOSED",
-        "GET_ITEM_INFO_RECEIVED",
         "MAIL_CLOSED",
         "MAIL_INBOX_UPDATE",
         "MAIL_SEND_SUCCESS",
         "MAIL_SUCCESS",
         "PLAYER_AVG_ITEM_LEVEL_UPDATE",
         "PLAYER_EQUIPMENT_CHANGED",
-        "PLAYER_LEVEL_UP",
         "PLAYER_SPECIALIZATION_CHANGED",
         "PLAYERBANKSLOTS_CHANGED",
         "PLAYERREAGENTBANKSLOTS_CHANGED",
@@ -94,6 +110,8 @@ function WarbandMeDowns:RegisterCacheInvalidationEvents()
     for _, eventName in ipairs(events) do
         pcall(self.RegisterEvent, self, eventName, "OnCacheInvalidated")
     end
+    pcall(self.RegisterEvent, self, "GET_ITEM_INFO_RECEIVED", "OnItemInfoReceived")
+    pcall(self.RegisterEvent, self, "PLAYER_LEVEL_UP", "OnPlayerLevelUp")
 end
 
 -- *** Setting the tooltip

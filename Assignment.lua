@@ -108,7 +108,6 @@ Assignment.settledCache = {}      -- settledCache[slotClassKey][targetEquipLoc][
 Assignment.unresolvedCache = {}   -- unresolvedCache[slotClassKey][targetEquipLoc][character] = true
 Assignment.unresolvedOwners = {}  -- unresolvedOwners[slotClassKey][equipLoc][character] = true (owns an unreadable item competing there)
 Assignment._sortedCharacters = {}
-Assignment._debounceTimer = nil
 
 -- *** Scoring
 --
@@ -1155,13 +1154,13 @@ end
 
 -- *** Dirty-flag orchestration
 --
--- Invalidation events mark the engine dirty and (re)arm a debounce instead
--- of eagerly recomputing - recomputing right after looting mid-combat is
--- exactly the wrong moment, since nobody's looking at a tooltip yet. Once
--- the debounce fires, an out-of-combat background recompute keeps the
--- engine warm; but correctness never depends on that firing; EnsureFresh()
--- always recomputes synchronously if still dirty, and is called before
--- every lookup.
+-- Invalidation events only mark the engine dirty. Nothing recomputes until an
+-- answer is actually needed: EnsureFresh() runs from the tooltip once it has
+-- established the hovered item is a sendable piece of gear, from the settings
+-- panel, and from /wmd. Bags change far more often than anyone looks at a
+-- tooltip - every looted item in a dungeon, a delve or combat - and the old
+-- debounced background recompute ran the whole scan and settlement again for
+-- each burst of them, which showed up as frame spikes during play.
 
 function Assignment:EnsureFresh()
     if self.dirty then
@@ -1192,11 +1191,20 @@ function Assignment:Recompute(userRequested)
     -- normal retail API, present in every build despite the name.
     local startTime = debugprofilestop()
 
-    Data.ClearItemCache()
+    -- Item facts and Pawn values are a function of the link and survive an
+    -- ordinary recompute - re-reading them for every item in the warband was
+    -- most of its cost. /wmd refresh drops them too, so a player who edited
+    -- their Pawn scales can force a full re-read.
+    if userRequested then
+        Data.ClearItemCache()
+        Pawn.ClearCaches()
+    else
+        Pawn.ClearGenerationCaches()
+    end
+    Data.ClearAwaitedItems()
     Characters.ClearWarbandCache()
     Characters.ClearEligibilityCache()
     Characters.ClearSpecCache()
-    Pawn.ClearCaches()
     WarbandMeDowns.ItemLevel.ClearCaches()
 
     -- Two passes, because the priority order is now derived from the scan.
@@ -1219,7 +1227,7 @@ function Assignment:Recompute(userRequested)
     self.dirty = false
 
     -- A recompute the player asked for always reports back - it is the only
-    -- feedback /wmd refresh gives. The automatic ones, which fire on every bag
+    -- feedback /wmd refresh gives. The automatic ones, which follow every bag
     -- update and equipment change, would be chat spam, so they are announced
     -- only in a development build: the packager strips the block below out of
     -- everything it builds, leaving `announce` as `userRequested` alone.
@@ -1237,38 +1245,10 @@ function Assignment:Recompute(userRequested)
     end
 end
 
----Marks the engine dirty and arms a debounced background recompute attempt.
----Safe to call repeatedly in a burst (e.g. several bag-update events in a
----row): each call cancels the previous timer, so only the last one fires.
----
----Note the timer methods are called on the addon object rather than on this
----one: AceTimer is mixed into WarbandMeDowns by NewAddon, and Assignment is a
----plain namespace table, not an AceAddon module. Cancelling on disable is
----handled for us through AceTimer's OnEmbedDisable - see OnDisable in
----Tooltip.lua.
+---Marks the engine dirty. Cheap and safe to call for every event in a burst:
+---the recompute happens once, the next time something asks for an answer.
 function Assignment:MarkDirty()
     self.dirty = true
-
-    if self._debounceTimer then
-        WarbandMeDowns:CancelTimer(self._debounceTimer)
-    end
-
-    self._debounceTimer = WarbandMeDowns:ScheduleTimer(function()
-        self._debounceTimer = nil
-        self:TryBackgroundRecompute()
-    end, 0.5)
-end
-
-function Assignment:TryBackgroundRecompute()
-    if not self.dirty then
-        return
-    end
-
-    if InCombatLockdown and InCombatLockdown() then
-        return -- try again on the next debounce; EnsureFresh() is the guaranteed fallback
-    end
-
-    self:Recompute()
 end
 
 ---Drops all engine state. Called on OnDisable so a re-enable starts clean.
@@ -1281,10 +1261,10 @@ function Assignment:Reset()
     self.unresolvedCache = {}
     self.unresolvedOwners = {}
     self._sortedCharacters = {}
-    self._debounceTimer = nil
     self.dirty = true
 
     Data.ClearItemCache()
+    Data.ClearAwaitedItems()
     Characters.ClearWarbandCache()
     Characters.ClearEligibilityCache()
     Characters.ClearSpecCache()

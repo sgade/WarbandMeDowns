@@ -27,7 +27,8 @@ local Characters = WarbandMeDowns.Characters
 
 local PawnScaleNameCache = {}
 local PawnScaleUnknown = {}
-local PawnItemValueCache = {} -- PawnItemValueCache[scaleName][itemLink] = number | false
+local PawnItemValueCache = {} -- PawnItemValueCache[scaleName][itemLink] = number, kept across recomputes
+local PawnItemFailedCache = {} -- PawnItemFailedCache[scaleName][itemLink] = true, this generation only
 
 ---Resolves the name of the Pawn scale to use for a character, if Pawn is
 ---installed and a scale can be determined. Never throws; returns nil for
@@ -74,20 +75,29 @@ function Pawn.GetPawnScaleNameForCharacter(character)
     return result
 end
 
----Clears the per-character Pawn scale-name memo and the per-item value
----cache. Called by WarbandMeDowns.Assignment:Recompute()/Reset() so a spec
----change or an item shuffling around the warband is always picked up.
-function Pawn.ClearCaches()
+---Clears what can change between recomputes: which scale each character
+---uses (a spec change) and which items Pawn could not score (it may be able
+---to now). Item values themselves are kept: a value is a function of the
+---scale and the link alone, and asking Pawn for one parses a tooltip, which
+---for the whole warband on every recompute was the bulk of its cost. Called
+---by WarbandMeDowns.Assignment:Recompute().
+function Pawn.ClearGenerationCaches()
     wipe(PawnScaleNameCache)
+    wipe(PawnItemFailedCache)
+end
+
+---Clears everything, including item values - for /wmd refresh (the player
+---may have edited their Pawn scales) and Assignment:Reset().
+function Pawn.ClearCaches()
+    Pawn.ClearGenerationCaches()
     wipe(PawnItemValueCache)
 end
 
 ---Scores an item against a named Pawn scale, using Pawn's own item parsing
 ---and valuation. Never throws; returns nil for any reason a value couldn't
----be produced. Memoized per (scaleName, itemLink) for the current
----generation, since Assignment now scans the full candidate pool per
----character instead of stopping early, which can otherwise re-score the
----same item many times.
+---be produced. Memoized per (scaleName, itemLink): a value for the session,
+---a failure only for the current generation, so an item Pawn could not read
+---yet is retried on the next recompute instead of being frozen as unscoreable.
 ---@param itemLink ItemInfo
 ---@param scaleName string
 ---@return number?
@@ -97,14 +107,22 @@ function Pawn.GetPawnItemValue(itemLink, scaleName)
     end
 
     local scaleCache = PawnItemValueCache[scaleName]
-    if scaleCache then
-        local cached = scaleCache[itemLink]
-        if cached ~= nil then
-            return cached or nil
-        end
-    else
+    if not scaleCache then
         scaleCache = {}
         PawnItemValueCache[scaleName] = scaleCache
+    end
+    local failedCache = PawnItemFailedCache[scaleName]
+    if not failedCache then
+        failedCache = {}
+        PawnItemFailedCache[scaleName] = failedCache
+    end
+
+    local cached = scaleCache[itemLink]
+    if cached ~= nil then
+        return cached
+    end
+    if failedCache[itemLink] then
+        return nil
     end
 
     local value = (function()
@@ -125,6 +143,10 @@ function Pawn.GetPawnItemValue(itemLink, scaleName)
         return result
     end)()
 
-    scaleCache[itemLink] = value or false
+    if value then
+        scaleCache[itemLink] = value
+    else
+        failedCache[itemLink] = true
+    end
     return value
 end
