@@ -157,11 +157,6 @@ local function PrintRanks()
     WarbandMeDowns:Print(ColorHeading .. "warband priority order" .. ColorReset)
 
     local ranking = Characters.GetWarbandRanking()
-    local pending = false
-
-    for _, entry in ipairs(ranking) do
-        pending = pending or entry.theoreticalPending
-    end
 
     for _, entry in ipairs(ranking) do
         local specIndex = Characters.GetKnownSpecIndex(entry.character)
@@ -181,19 +176,6 @@ local function PrintRanks()
             specIndex and tostring(specIndex) or "?",
             scaleName or (ColorWarn .. "no Pawn scale" .. ColorReset)
         )
-    end
-
-    if pending then
-        -- Started, not waited for. Settling the warband takes a second and is
-        -- what used to make this command stall; the ranking above is complete
-        -- without it, and only `theo` needs it. No automatic reprint - dumping
-        -- a second copy of this table into chat unasked is worse than the one
-        -- missing column.
-        WarbandMeDowns:Printf(
-            "  %s(theo still being computed - run /wmd ranks again in a moment)%s",
-            ColorMuted, ColorReset
-        )
-        Assignment:SettleAllGroupsIncrementally()
     end
 end
 

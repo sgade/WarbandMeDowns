@@ -448,6 +448,12 @@ function Data.GetItemBind(link)
 end
 
 ---@param link ItemInfo
+---@return number?
+function Data.GetItemID(link)
+    return InstantInfo(link).itemID
+end
+
+---@param link ItemInfo
 function Data.GetItemClassAndSubclass(link)
     local info = InstantInfo(link)
     return info.classID, info.subclassID
@@ -463,6 +469,35 @@ end
 ---@return string?
 function Data.GetInstantEquipLocation(link)
     return InstantInfo(link).equipLoc
+end
+
+---A key that is the same for every link to the same item instance data,
+---whoever produced the link.
+---
+---Two links to the same item need not be the same string. The display wrapper
+---around the item string carries the name, which is empty when the link was
+---made before the client had cached the item, and inside the item string the
+---link level and specialization fields (9 and 10) describe the character who
+---produced the link rather than the item. So the tooltip's link for an item in
+---the bags and the one DataStore stored for it can differ. Keeping just the
+---item string, with those two fields blanked, compares what the item is.
+---@param link ItemInfo
+---@return string
+function Data.NormalizedLinkKey(link)
+    local itemString = tostring(link):match("|H(item:[^|]*)|h") or tostring(link):match("^(item:[^|]*)$")
+    if not itemString then
+        return tostring(link)
+    end
+
+    local fields = { strsplit(":", itemString) }
+    -- fields[1] is the "item" prefix, so link level and spec are 10 and 11 here.
+    if fields[10] then
+        fields[10] = ""
+    end
+    if fields[11] then
+        fields[11] = ""
+    end
+    return table.concat(fields, ":")
 end
 
 ---@param itemLink ItemInfo

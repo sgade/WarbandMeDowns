@@ -27,11 +27,12 @@
   describes what an item *will* do, not whether a specific instance has
   already bound - see Data.IsActuallySoulbound for how that's resolved.
 
-  The expensive part (the full warband scan) happens once per recompute.
-  Settling any one (slot-class, target equip location) pair is lazy and
-  memoized for the current generation, so hovering many items that all
-  share a slot-class (e.g. browsing a vendor's rings) only ever pays for
-  that settlement once.
+  Everything - the full warband scan and the settlement of every
+  (slot-class, target equip location) pair - happens once per recompute, in
+  one fixed order. Tooltips then only read the result. Settling lazily, a
+  group at a time as items were hovered, made the answer depend on what was
+  hovered first: a claim in one group removes the item from every other group
+  it could satisfy (an ambidextrous one-hander feeds both weapon hands).
 
   *** The answer must not depend on who is logged in ***
 
@@ -52,6 +53,13 @@
       is chosen once per character per settlement and used for every
       comparison in it, instead of falling back per pair. Mixing two orderings
       in one chain made the greedy winner depend on scan order.
+
+    - A hovered item is matched to its scanned instance by bag and slot
+      first, and by a normalized link only after that. The tooltip's link and
+      the one DataStore stored need not be the same string (an empty name
+      when the item was scanned uncached, the level and spec fields), and an
+      owned item that failed to match fell through to the foreign path, tied
+      with itself there, and read "sell it".
 
     - Iteration is deterministic. Characters are walked in priority order and
       every candidate bucket is sorted on a stable key, so Lua's `pairs`
@@ -75,7 +83,6 @@ local Pawn = WarbandMeDowns.Pawn
 
 -- Sentinels, mirroring the old CacheMiss idiom.
 Assignment.Sell = {}         -- confirmed upgrade for nobody: drives the tooltip's sell line
-Assignment.Ineligible = {}   -- this character can never use this slot-class at all
 Assignment.Pending = {}      -- the answer depends on item data the client has not cached yet
 
 -- Where a pool/floorExtra entry was found. Only used to order entries
@@ -87,19 +94,21 @@ local SourceMail = 2
 -- either; it has to count against every slot of its class.
 local AnyEquipLocation = "*"
 
+-- The targets one pool item can be claimed for besides its own location -
+-- see Data.EquipLocationsMatch and Assignment:_SettleableGroups.
+local OneHandWeaponTargets = { "INVTYPE_WEAPON", "INVTYPE_WEAPONMAINHAND", "INVTYPE_WEAPONOFFHAND" }
+
 -- Per-generation state, wiped wholesale by Recompute()/Reset() - see below.
 Assignment.dirty = true
 Assignment.pool = {}              -- pool[slotClassKey][rawEquipLoc] = { entry, ... }       (sendable bag/bank/mail items)
 Assignment.floorExtra = {}        -- floorExtra[slotClassKey][rawEquipLoc] = { entry, ... }  (unsendable bag/bank/mail items)
-Assignment.entriesByLink = {}     -- entriesByLink[itemLink] = { entry, ... }                (every pool entry sharing a link)
-Assignment.settledCache = {}      -- settledCache[slotClassKey][targetEquipLoc][character] = { claims = { entry, ... }, floor = itemLink? } | Ineligible
+Assignment.entriesByLink = {}     -- entriesByLink[linkKey] = { entry, ... }                 (every pool entry sharing a normalized link)
+Assignment.entriesBySlot = {}     -- entriesBySlot[containerId][slotId] = entry              (the current character's own pool entries)
+Assignment.settledCache = {}      -- settledCache[slotClassKey][targetEquipLoc][character] = { claims = { entry, ... }, held = { itemLink, ... }, slotCount = n }
 Assignment.unresolvedCache = {}   -- unresolvedCache[slotClassKey][targetEquipLoc][character] = true
 Assignment.unresolvedOwners = {}  -- unresolvedOwners[slotClassKey][equipLoc][character] = true (owns an unreadable item competing there)
 Assignment._sortedCharacters = {}
 Assignment._debounceTimer = nil
-Assignment.settledAll = false     -- every group in the pool has been settled this generation
-Assignment._settleTimer = nil
-Assignment._settleQueue = nil
 
 -- *** Scoring
 --
@@ -348,12 +357,18 @@ function Assignment:_ClassifyItem(character, itemLink, itemLocation, source, con
     table.insert(bucketTable[slotClassKey][equipLoc], entry)
 
     if sendable then
-        local entries = self.entriesByLink[itemLink]
+        local linkKey = Data.NormalizedLinkKey(itemLink)
+        local entries = self.entriesByLink[linkKey]
         if not entries then
             entries = {}
-            self.entriesByLink[itemLink] = entries
+            self.entriesByLink[linkKey] = entries
         end
         table.insert(entries, entry)
+
+        if source == SourceContainer and character == DataStore.ThisCharKey then
+            self.entriesBySlot[containerId] = self.entriesBySlot[containerId] or {}
+            self.entriesBySlot[containerId][slotId] = entry
+        end
     end
 end
 
@@ -368,6 +383,7 @@ function Assignment:ScanWarband()
     self.pool = {}
     self.floorExtra = {}
     self.entriesByLink = {}
+    self.entriesBySlot = {}
     self.settledCache = {}
     self.unresolvedCache = {}
     self.unresolvedOwners = {}
@@ -643,20 +659,24 @@ function Assignment:_ClaimBestCandidate(character, candidates, floor, scorer)
 end
 
 ---Settles one (slot-class, target equip location) pair: walks the warband
----in priority order, greedily giving each eligible character the best
----still-unclaimed pool candidate that beats their floor - once per slot the
+---in priority order, greedily giving each character the best still-unclaimed
+---pool candidate they can wear that beats their floor - once per slot the
 ---location has, so a dual-wielder can take a pair of one-handers and anyone
 ---can take two rings. Giving out only one item per character used to leave
----the second warglaive of a pair with nobody to go to. A claimed
----pool entry is removed from play for every other target group it could
----also have satisfied (e.g. an ambidextrous one-hander claimed while
----settling INVTYPE_WEAPON is no longer available when INVTYPE_WEAPONMAINHAND
----is settled later). No-ops if already settled this generation.
+---the second warglaive of a pair with nobody to go to. A claimed pool entry
+---is removed from play for every other target group it could also have
+---satisfied (e.g. an ambidextrous one-hander claimed while settling
+---INVTYPE_WEAPON is no longer available when INVTYPE_WEAPONMAINHAND is
+---settled later), which is why SettleAllGroups fixes the order. No-ops if
+---already settled this generation.
+---
+---There is no group-level "can this character use this at all" check: for
+---armor the slot-class spans cloth to plate, so any one item standing in for
+---the group decided the answer for all of them. Eligibility is per entry here
+---(EquippableEntries) and per hovered item in GetBestCharacterForItem.
 ---@param slotClassKey string
 ---@param targetEquipLoc string
----@param classID number
----@param subclassID number
-function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassID)
+function Assignment:SettleGroup(slotClassKey, targetEquipLoc)
     self.settledCache[slotClassKey] = self.settledCache[slotClassKey] or {}
     self.unresolvedCache[slotClassKey] = self.unresolvedCache[slotClassKey] or {}
     if self.settledCache[slotClassKey][targetEquipLoc] then
@@ -671,18 +691,30 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassI
     local unresolved = {}
 
     for _, character in ipairs(self._sortedCharacters) do
-        if not Characters.CanCharacterEquipItemClass(character, classID, subclassID) then
-            settled[character] = self.Ineligible
-        else
-            local equipped, slotCount = Characters.GetEquippedItemsForEquipLocation(character, targetEquipLoc)
+        local equipped, slotCount = Characters.GetEquippedItemsForEquipLocation(character, targetEquipLoc)
 
-            -- Narrowed to what this character can actually wear before anything
-            -- is scored or claimed - see EquippableEntries. The entry tables are
-            -- the same objects, so claims still propagate to every other group
-            -- the entry could have satisfied.
-            local ownCandidates = EquippableEntries(character, candidates)
-            local ownFloorExtra = EquippableEntries(character, floorExtra)
+        -- Narrowed to what this character can actually wear before anything
+        -- is scored or claimed - see EquippableEntries. The entry tables are
+        -- the same objects, so claims still propagate to every other group
+        -- the entry could have satisfied.
+        local ownCandidates = EquippableEntries(character, candidates)
+        local ownFloorExtra = EquippableEntries(character, floorExtra)
 
+        local held = HeldItems(character, slotClassKey, ownFloorExtra, equipped, slotCount)
+        local claims = {}
+
+        -- Nothing to claim means nothing to score: the held set is all a
+        -- foreign item is compared with later, and that comparison builds its
+        -- own scorer.
+        local hasCandidate = false
+        for _, entry in ipairs(ownCandidates) do
+            if not entry.claimedBy then
+                hasCandidate = true
+                break
+            end
+        end
+
+        if hasCandidate then
             local scorer = self:_BuildScorerForCharacter(
                 character,
                 CollectRelevantItems(character, equipped, slotCount, ownFloorExtra, ownCandidates)
@@ -690,8 +722,6 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassI
 
             -- Each claim joins what the character holds, raising the floor the
             -- next one has to beat.
-            local held = HeldItems(character, slotClassKey, ownFloorExtra, equipped, slotCount)
-            local claims = {}
             for _ = 1, slotCount do
                 local floor = HeldFloor(scorer, held, slotCount)
                 local claimed = self:_ClaimBestCandidate(character, ownCandidates, floor, scorer)
@@ -705,21 +735,41 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassI
                 table.insert(held, claimed.link)
             end
 
-            settled[character] = {
-                claims = claims,
-                -- What any further item would have to beat once the claims
-                -- are worn.
-                floor = HeldFloor(scorer, held, slotCount),
-            }
-
-            if not scorer.resolved or unreadableOwners[character] then
+            if not scorer.resolved then
                 unresolved[character] = true
             end
         end
+
+        if unreadableOwners[character] then
+            unresolved[character] = true
+        end
+
+        settled[character] = {
+            claims = claims,
+            held = held,
+            slotCount = slotCount,
+        }
     end
 
     self.settledCache[slotClassKey][targetEquipLoc] = settled
     self.unresolvedCache[slotClassKey][targetEquipLoc] = unresolved
+end
+
+---The bar a further item has to beat for this character once their claims in
+---this group are worn, and the scorer it was decided with.
+---@param character string
+---@param result table # one settledCache character entry
+---@param itemLink ItemInfo # the item being judged, so the scorer covers it
+---@return ItemInfo? floor
+---@return WarbandMeDownsScorer scorer
+function Assignment:_SettledFloor(character, result, itemLink)
+    local items = { itemLink }
+    for _, link in ipairs(result.held) do
+        table.insert(items, link)
+    end
+
+    local scorer = self:_BuildScorerForCharacter(character, items)
+    return HeldFloor(scorer, result.held, result.slotCount), scorer
 end
 
 -- *** Phase D: exposing results
@@ -754,24 +804,28 @@ end
 ---same ring), and they are claimed independently, so answering with whichever
 ---entry happened to be recorded first can name the character who received the
 ---*other* copy. Pin the real instance down by bag and slot when the tooltip
----gives us a live location, then prefer the current character's own copy,
----and only then fall back to the first entry in the (now deterministic) order.
+---gives us a live location - before looking at the link at all, since the
+---tooltip's link and the stored one can differ as strings (see
+---Data.NormalizedLinkKey) - then match on the normalized link, prefer the
+---current character's own copy, and only then fall back to the first entry in
+---the (deterministic) order.
 ---@param itemLink ItemInfo
 ---@param itemLocation ItemLocation?
 ---@return table?
 function Assignment:_FindEntryForHoveredItem(itemLink, itemLocation)
-    local entries = self.entriesByLink[itemLink]
-    if not entries then
-        return nil
-    end
-
     local bagID, slotID = GetBagAndSlot(itemLocation)
     if bagID then
-        for _, entry in ipairs(entries) do
-            if entry.source == SourceContainer and entry.containerId == bagID and entry.slotId == slotID then
-                return entry
-            end
+        local entry = self.entriesBySlot[bagID] and self.entriesBySlot[bagID][slotID]
+        -- The same item, not just the same slot: the scan can be a moment
+        -- behind the bags, and the slot may hold something else by now.
+        if entry and Data.GetItemID(entry.link) == Data.GetItemID(itemLink) then
+            return entry
         end
+    end
+
+    local entries = self.entriesByLink[Data.NormalizedLinkKey(itemLink)]
+    if not entries then
+        return nil
     end
 
     for _, entry in ipairs(entries) do
@@ -854,8 +908,11 @@ function Assignment:GetBestCharacterForItem(itemLink, itemLocation)
 
     self:EnsureFresh()
 
+    -- Already settled by Recompute whenever the pool has a candidate for this
+    -- target. Otherwise this settles an empty group, which claims nothing and
+    -- so cannot change any other group's answer.
     local slotClassKey = Data.SlotClassKey(classID, subclassID)
-    self:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassID)
+    self:SettleGroup(slotClassKey, targetEquipLoc)
     local unresolved = self.unresolvedCache[slotClassKey][targetEquipLoc]
 
     -- Owned path: this exact item was seen during the warband scan.
@@ -876,21 +933,19 @@ function Assignment:GetBestCharacterForItem(itemLink, itemLocation)
     end
 
     -- Foreign path: not part of the precomputed pool - compare against the
-    -- floor every character is left with once their claims are worn, instead
-    -- of rescanning the warband. The floor is the slot this item would
-    -- actually replace.
+    -- floor every character who can wear it is left with once their claims
+    -- are worn, instead of rescanning the warband. The floor is the slot this
+    -- item would actually replace.
     local settled = self.settledCache[slotClassKey][targetEquipLoc]
     for _, character in ipairs(self._sortedCharacters) do
         if unresolved[character] then
             return self.Pending
         end
 
-        local result = settled[character]
-        if result ~= self.Ineligible then
-            local floor = result.floor
-            local scorer = self:_BuildScorerForCharacter(character, { itemLink, floor })
+        if Characters.CanCharacterEquipItem(character, itemLink) then
+            local floor, scorer = self:_SettledFloor(character, settled[character], itemLink)
             local comparison = CompareWithScorer(scorer, itemLink, floor)
-            if comparison == nil then
+            if comparison == nil or not scorer.resolved then
                 return self.Pending
             elseif comparison == 1 then
                 return self:BuildUpgradeInfo(character, itemLink, floor)
@@ -903,39 +958,42 @@ end
 
 -- *** Bulk settlement
 --
--- The tooltip path only ever needs the one group the hovered item belongs to,
--- so SettleGroup is lazy. Anything that wants to know what the engine hands
--- *every* character - the settings page's projected item levels - needs the
--- claims from every group instead, which is what SettleAllGroups forces.
+-- Recompute settles every group up front, in one fixed order, so the claims -
+-- and with them every tooltip, the settings page's projected item levels and
+-- /wmd - are the same no matter what is looked at first.
 
----Every (slot-class, target equip location) pair that has at least one
----sendable candidate, in a stable order.
+---Every (slot-class, target equip location) pair a pool candidate could be
+---claimed for, in a stable order.
 ---
----Order matters and is not cosmetic: claims are cross-group stateful (an
----ambidextrous one-hander claimed while settling INVTYPE_WEAPON is gone by the
----time INVTYPE_WEAPONMAINHAND is settled), so settling in `pairs` order would
----make the result differ between sessions. Walking the keys in sorted order
----pins it down.
----@return table[] # { slotClassKey, equipLoc, classID, subclassID }
+---Each pool item's own location, plus every other target it satisfies under
+---Data.EquipLocationsMatch: an ambidextrous one-hander also competes for the
+---main-hand-only and off-hand-only targets. Leaving those out would let a
+---later hover settle them lazily and claim one-handers the earlier pass had
+---left free, so the answer would again depend on what was hovered first. Any
+---target not listed here has no candidates, and settling it claims nothing.
+---
+---Order matters and is not cosmetic: claims are cross-group stateful, so
+---settling in `pairs` order would make the result differ between sessions.
+---Walking the keys in sorted order pins it down.
+---@return table[] # { slotClassKey, equipLoc }
 function Assignment:_SettleableGroups()
     local groups = {}
 
     for _, slotClassKey in ipairs(SortedKeys(self.pool)) do
-        local buckets = self.pool[slotClassKey]
-
-        for _, equipLoc in ipairs(SortedKeys(buckets)) do
-            local first = buckets[equipLoc][1]
-            if first then
-                local classID, subclassID = Data.GetItemClassAndSubclass(first.link)
-                if classID and subclassID then
-                    table.insert(groups, {
-                        slotClassKey = slotClassKey,
-                        equipLoc = equipLoc,
-                        classID = classID,
-                        subclassID = subclassID,
-                    })
+        local targets = {}
+        for equipLoc, entries in pairs(self.pool[slotClassKey]) do
+            if entries[1] then
+                targets[equipLoc] = true
+                for _, target in ipairs(OneHandWeaponTargets) do
+                    if Data.EquipLocationsMatch(equipLoc, target) then
+                        targets[target] = true
+                    end
                 end
             end
+        end
+
+        for _, equipLoc in ipairs(SortedKeys(targets)) do
+            table.insert(groups, { slotClassKey = slotClassKey, equipLoc = equipLoc })
         end
     end
 
@@ -943,91 +1001,11 @@ function Assignment:_SettleableGroups()
 end
 
 ---Settles every group that has a candidate in it, so `entry.claimedBy` is
----populated across the whole pool. Idempotent within a generation - SettleGroup
----no-ops on an already-settled pair - and deterministic, so calling this does
----not change any answer a tooltip would otherwise have given; it only makes
----later tooltip answers independent of the order groups happened to be
----hovered in.
+---complete across the whole pool. Called once per generation by Recompute.
 function Assignment:SettleAllGroups()
     for _, group in ipairs(self:_SettleableGroups()) do
-        self:SettleGroup(group.slotClassKey, group.equipLoc, group.classID, group.subclassID)
+        self:SettleGroup(group.slotClassKey, group.equipLoc)
     end
-    self.settledAll = true
-end
-
----Whether every group has been settled this generation, i.e. whether
----`entry.claimedBy` can be trusted to be complete.
----@return boolean
-function Assignment:IsFullySettled()
-    return self.settledAll
-end
-
----Settles every group the way SettleAllGroups does, but one group per timer
----tick instead of all of them in the frame that asked.
----
----Settling the whole pool at once is expensive in a way the tooltip path never
----is: with Pawn installed it asks Pawn to evaluate every warbound item in the
----warband, and Pawn parses a hidden tooltip per item it has not seen. Several
----hundred of those in one frame is a visible stall, which is what made opening
----the settings panel hitch.
----
----One group per tick is the finest grain available - SettleGroup mutates claims
----across the whole pool and has to complete atomically, so it cannot be split.
----
----Safe to call repeatedly: a run already in flight is left alone, and a
----Recompute cancels it (see CancelIncrementalSettle) rather than letting it
----continue against a wiped pool.
----@param onComplete fun()? # called once the last group is settled
-function Assignment:SettleAllGroupsIncrementally(onComplete)
-    if self.settledAll then
-        if onComplete then
-            onComplete()
-        end
-        return
-    end
-
-    if self._settleTimer then
-        return -- already running
-    end
-
-    self._settleQueue = self:_SettleableGroups()
-    local index = 0
-    local generation = self._settleQueue
-
-    local function step()
-        self._settleTimer = nil
-
-        -- A Recompute since the last tick replaced the queue; this run is stale.
-        if self._settleQueue ~= generation then
-            return
-        end
-
-        index = index + 1
-        local group = generation[index]
-        if not group then
-            self.settledAll = true
-            self._settleQueue = nil
-            if onComplete then
-                onComplete()
-            end
-            return
-        end
-
-        self:SettleGroup(group.slotClassKey, group.equipLoc, group.classID, group.subclassID)
-        self._settleTimer = WarbandMeDowns:ScheduleTimer(step, 0.05)
-    end
-
-    self._settleTimer = WarbandMeDowns:ScheduleTimer(step, 0)
-end
-
----Stops an in-flight incremental settle. The pool it was walking is about to be
----thrown away, so its remaining groups are meaningless.
-function Assignment:CancelIncrementalSettle()
-    if self._settleTimer then
-        WarbandMeDowns:CancelTimer(self._settleTimer)
-        self._settleTimer = nil
-    end
-    self._settleQueue = nil
 end
 
 ---Every bag/bank/mail entry the last scan produced - sendable pool entries
@@ -1119,7 +1097,7 @@ function Assignment:ExplainItem(itemLink)
 
     local slotClassKey = Data.SlotClassKey(classID, subclassID)
     explanation.slotClassKey = slotClassKey
-    self:SettleGroup(slotClassKey, explanation.equipLoc, classID, subclassID)
+    self:SettleGroup(slotClassKey, explanation.equipLoc)
 
     local settled = self.settledCache[slotClassKey][explanation.equipLoc]
     local unresolved = self.unresolvedCache[slotClassKey][explanation.equipLoc]
@@ -1142,15 +1120,15 @@ function Assignment:ExplainItem(itemLink)
             settled = result,
         }
 
-        if result == self.Ineligible then
+        if not Characters.CanCharacterEquipItem(character, itemLink) then
             row.eligible = false
         else
             row.eligible = true
 
             local equipped, slotCount = Characters.GetEquippedItemsForEquipLocation(character, explanation.equipLoc)
             local relevant = CollectRelevantItems(character, equipped, slotCount, floorExtra, candidates)
-            for _, claimed in ipairs(result.claims) do
-                table.insert(relevant, claimed.link)
+            for _, link in ipairs(result.held) do
+                table.insert(relevant, link)
             end
             table.insert(relevant, itemLink)
 
@@ -1162,7 +1140,7 @@ function Assignment:ExplainItem(itemLink)
             if row.isWinner then
                 row.floor = hoveredEntry.claimedOverFloor
             else
-                row.floor = result.floor
+                row.floor = HeldFloor(scorer, result.held, result.slotCount)
             end
             row.floorScore = row.floor and scorer.scoreOf(row.floor)
             row.itemScore = scorer.scoreOf(itemLink)
@@ -1214,11 +1192,6 @@ function Assignment:Recompute(userRequested)
     -- normal retail API, present in every build despite the name.
     local startTime = debugprofilestop()
 
-    -- Whatever the incremental settle had left to do refers to a pool that is
-    -- about to be replaced.
-    self:CancelIncrementalSettle()
-    self.settledAll = false
-
     Data.ClearItemCache()
     Characters.ClearWarbandCache()
     Characters.ClearEligibilityCache()
@@ -1242,6 +1215,7 @@ function Assignment:Recompute(userRequested)
     -- CharacterPriorityComparator ranks on what each character owns - and
     -- before anything settles, since SettleGroup walks _sortedCharacters.
     self._sortedCharacters = Characters.GetSortedWarbandCharacters()
+    self:SettleAllGroups()
     self.dirty = false
 
     -- A recompute the player asked for always reports back - it is the only
@@ -1295,11 +1269,6 @@ function Assignment:TryBackgroundRecompute()
     end
 
     self:Recompute()
-
-    -- Warm the settlement too, spread over the next handful of frames. Nothing
-    -- needs it yet, but the settings panel and /wmd ranks do, and paying for it
-    -- here means those are instant and complete when they are opened.
-    self:SettleAllGroupsIncrementally()
 end
 
 ---Drops all engine state. Called on OnDisable so a re-enable starts clean.
@@ -1307,15 +1276,13 @@ function Assignment:Reset()
     self.pool = {}
     self.floorExtra = {}
     self.entriesByLink = {}
+    self.entriesBySlot = {}
     self.settledCache = {}
     self.unresolvedCache = {}
     self.unresolvedOwners = {}
     self._sortedCharacters = {}
     self._debounceTimer = nil
-    self.settledAll = false
     self.dirty = true
-
-    self:CancelIncrementalSettle()
 
     Data.ClearItemCache()
     Characters.ClearWarbandCache()

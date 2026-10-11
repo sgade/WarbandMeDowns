@@ -136,18 +136,13 @@ local function GetRowData(entry)
         levelText = entry.level and tostring(entry.level) or "—",
         itemLevelText = FormatItemLevel(entry.itemLevel),
         maxItemLevelText = FormatItemLevel(entry.maxItemLevel),
-        -- An ellipsis rather than an em dash: the warband is still being
-        -- settled in the background and a number is on its way, which is a
-        -- different statement from "there is nothing to show".
-        theoreticalItemLevelText = entry.theoreticalPending and "…"
-            or FormatItemLevel(entry.theoreticalItemLevel),
+        theoreticalItemLevelText = FormatItemLevel(entry.theoreticalItemLevel),
         -- Rendered green only when the projection is actually an improvement,
         -- so a row where nothing is waiting to be equipped stays quiet.
         maxIsUpgrade = (entry.maxItemLevel and entry.itemLevel
             and entry.maxItemLevel - entry.itemLevel >= 0.5) or false,
         theoreticalIsUpgrade = (entry.theoreticalItemLevel and entry.maxItemLevel
             and entry.theoreticalItemLevel - entry.maxItemLevel >= 0.5) or false,
-        theoreticalPending = entry.theoreticalPending,
         projectionUnresolved = entry.unresolved,
         classToken = classSuccess and classToken or nil,
         bagsBankText = FormatElapsed(GetModuleLastUpdate("DataStore_Containers", entry.character)),
@@ -227,8 +222,7 @@ local function InitializeRow(row, data)
     -- Muted whenever some of this character's item data still isn't cached:
     -- the numbers are the best answer available right now, not the final one.
     SetProjectionColor(row.maxItemLevelText, data.projectionUnresolved, data.maxIsUpgrade)
-    SetProjectionColor(row.theoreticalItemLevelText,
-        data.projectionUnresolved or data.theoreticalPending, data.theoreticalIsUpgrade)
+    SetProjectionColor(row.theoreticalItemLevelText, data.projectionUnresolved, data.theoreticalIsUpgrade)
 end
 
 ---Builds a header row from the same `Columns` list InitializeRow lays out, so
@@ -350,25 +344,11 @@ function SettingsPage.RefreshTable()
     end
 
     local dataProvider = CreateDataProvider()
-    local pending = false
     for _, entry in ipairs(ranking) do
-        pending = pending or entry.theoreticalPending
         dataProvider:Insert(GetRowData(entry))
     end
 
     Panel.scrollView:SetDataProvider(dataProvider)
-
-    -- The table is on screen already; the Theoretical column fills itself in as
-    -- the warband settles a group at a time. Settling it here instead would
-    -- stall the frame that opened the panel, which is the whole reason this is
-    -- incremental.
-    if pending then
-        WarbandMeDowns.Assignment:SettleAllGroupsIncrementally(function()
-            if Panel and Panel:IsShown() then
-                SettingsPage.RefreshTable()
-            end
-        end)
-    end
 end
 
 -- *** Registration
