@@ -29,12 +29,11 @@
 -- WarbandMeDowns.toc for load order: this file must load first.
 
 -- AceConsole gives /wmd and the standard "|cff33ff99WarbandMeDowns|r:" print
--- prefix; AceEvent replaces a hand-rolled event frame; AceTimer replaces a
--- hand-rolled debounce token. AceAddon calls each embedded library's
--- OnEmbedDisable on disable, which is what unregisters the events and cancels
--- the timers - see OnDisable in Tooltip.lua.
+-- prefix; AceEvent replaces a hand-rolled event frame. AceAddon calls each
+-- embedded library's OnEmbedDisable on disable, which is what unregisters the
+-- events - see OnDisable in Tooltip.lua.
 WarbandMeDowns = LibStub("AceAddon-3.0"):NewAddon(
-    "WarbandMeDowns", "AceConsole-3.0", "AceEvent-3.0", "AceTimer-3.0")
+    "WarbandMeDowns", "AceConsole-3.0", "AceEvent-3.0")
 
 -- There is deliberately no WarbandMeDowns.Util here. It used to hold
 -- arrayContains and clearTable, which are Blizzard's own `tContains` and
