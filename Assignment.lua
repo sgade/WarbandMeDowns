@@ -92,7 +92,7 @@ Assignment.dirty = true
 Assignment.pool = {}              -- pool[slotClassKey][rawEquipLoc] = { entry, ... }       (sendable bag/bank/mail items)
 Assignment.floorExtra = {}        -- floorExtra[slotClassKey][rawEquipLoc] = { entry, ... }  (unsendable bag/bank/mail items)
 Assignment.entriesByLink = {}     -- entriesByLink[itemLink] = { entry, ... }                (every pool entry sharing a link)
-Assignment.settledBestCache = {}  -- settledBestCache[slotClassKey][targetEquipLoc][character] = itemLink | false | Ineligible
+Assignment.settledCache = {}      -- settledCache[slotClassKey][targetEquipLoc][character] = { claims = { entry, ... }, floor = itemLink? } | Ineligible
 Assignment.unresolvedCache = {}   -- unresolvedCache[slotClassKey][targetEquipLoc][character] = true
 Assignment.unresolvedOwners = {}  -- unresolvedOwners[slotClassKey][equipLoc][character] = true (owns an unreadable item competing there)
 Assignment._sortedCharacters = {}
@@ -359,7 +359,7 @@ end
 
 ---One pass over every character's bags, bank, and mail. Equipped items are
 ---deliberately not scanned here: they're read on demand from DataStore (a
----handful of O(1) slot lookups) inside _ReplaceableFloorItem, since they're
+---handful of O(1) slot lookups) inside SettleGroup, since they're
 ---never reassignable and don't need bulk bucketing.
 ---
 ---Requires self._sortedCharacters to already be populated - Recompute() sorts
@@ -368,7 +368,7 @@ function Assignment:ScanWarband()
     self.pool = {}
     self.floorExtra = {}
     self.entriesByLink = {}
-    self.settledBestCache = {}
+    self.settledCache = {}
     self.unresolvedCache = {}
     self.unresolvedOwners = {}
 
@@ -425,68 +425,82 @@ local function IsSameSlotClass(itemLink, slotClassKey)
     return Data.SlotClassKey(classID, subclassID) == slotClassKey
 end
 
----The item this character would actually give up to take something new -
----the bar a candidate has to beat.
+---Everything this character already has for this location: the equipped
+---slots, plus the unsendable bag/bank/mail items they could put on instead.
 ---
----For a location with more than one slot (two rings, two trinkets, both
----hands) a new item displaces the *worst* of them, so the worst is the bar.
----Using the best instead - as an earlier version did - meant a character with
----one good ring rejected every ring, and the item cascaded down the warband to
----someone who needed it less.
----
----A slot contributes "nothing to give up" when it is empty, or when it holds
----an item of a different slot-class. GetEquippedItemsForEquipLocation resolves
----purely by inventory slot (both hands for INVTYPE_WEAPON, both offhand-slot
----types for INVTYPE_SHIELD/INVTYPE_HOLDABLE), so it can hand back an item that
----is not comparable at all - a Sword sharing INVTYPE_WEAPON with an equipped
----Dagger, a Shield sharing INVSLOT_OFFHAND with an equipped Holdable. Such an
----item cannot serve as the bar, and the slot is going to be taken over anyway,
----so either case drives the floor to nil.
+---A slot contributes nothing when it is empty, or when it holds an item of a
+---different slot-class. GetEquippedItemsForEquipLocation resolves purely by
+---inventory slot (both offhand-slot types for INVTYPE_SHIELD/INVTYPE_HOLDABLE,
+---both hands for a dual-wielder's INVTYPE_WEAPON), so it can hand back an item
+---that is not comparable at all - a Sword next to an equipped Dagger, a Shield
+---where a Holdable is worn. Such an item cannot serve as the bar, and the slot
+---is going to be taken over anyway, so it counts as empty.
 ---
 ---Unsendable bag/bank/mail items are not slots but alternatives: if the
----character already owns a better ring they cannot send away, they would equip
----that instead of receiving this one. So the final floor is the better of the
----worst equipped slot and the best unsendable item they already hold.
+---character already owns a better ring they cannot send away, they would wear
+---that instead of receiving this one.
 ---@param character string
 ---@param slotClassKey string
 ---@param floorExtra table[] # unsendable bag/bank/mail entries relevant to this target
----@param scorer WarbandMeDownsScorer
 ---@param equipped ItemInfo[]
 ---@param slotCount number
----@return ItemInfo?
-function Assignment:_ReplaceableFloorItem(character, slotClassKey, floorExtra, scorer, equipped, slotCount)
-    local equippedFloor = nil
+---@return ItemInfo[]
+local function HeldItems(character, slotClassKey, floorExtra, equipped, slotCount)
+    local held = {}
 
     for index = 1, slotCount do
         local equippedLink = equipped[index]
-        if not equippedLink or not IsSameSlotClass(equippedLink, slotClassKey) then
-            -- Nothing to give up in this slot; no other slot can be lower.
-            equippedFloor = nil
-            break
-        end
-
-        if not equippedFloor or CompareWithScorer(scorer, equippedLink, equippedFloor) == -1 then
-            equippedFloor = equippedLink
+        if equippedLink and IsSameSlotClass(equippedLink, slotClassKey) then
+            table.insert(held, equippedLink)
         end
     end
 
-    local ownedFloor = nil
     for _, entry in ipairs(floorExtra) do
         if entry.character == character then
-            if not ownedFloor or CompareWithScorer(scorer, entry.link, ownedFloor) == 1 then
-                ownedFloor = entry.link
-            end
+            table.insert(held, entry.link)
         end
     end
 
-    if not equippedFloor then
-        return ownedFloor
-    end
-    if not ownedFloor then
-        return equippedFloor
+    return held
+end
+
+---The bar a new item has to beat: the worst item the character would still be
+---wearing, i.e. the `slotCount`-th best of everything they hold. nil when they
+---do not hold enough to fill every slot - an empty slot takes anything.
+---
+---For a location with more than one slot (two rings, two trinkets, a
+---dual-wielder's hands) a new item displaces the *worst* of them, so the worst
+---is the bar. Using the best instead - as an earlier version did - meant a
+---character with one good ring rejected every ring, and the item cascaded down
+---the warband to someone who needed it less.
+---
+---An item the scorer cannot read sorts as if it were the best, so a cold cache
+---can never make a slot look free; the settlement is flagged unresolved in that
+---case anyway.
+---@param scorer WarbandMeDownsScorer
+---@param held ItemInfo[]
+---@param slotCount number
+---@return ItemInfo?
+local function HeldFloor(scorer, held, slotCount)
+    if slotCount < 1 or #held < slotCount then
+        return nil
     end
 
-    return CompareWithScorer(scorer, ownedFloor, equippedFloor) == 1 and ownedFloor or equippedFloor
+    local sorted = {}
+    for _, link in ipairs(held) do
+        table.insert(sorted, link)
+    end
+
+    table.sort(sorted, function(left, right)
+        local leftScore = scorer.scoreOf(left) or math.huge
+        local rightScore = scorer.scoreOf(right) or math.huge
+        if leftScore ~= rightScore then
+            return leftScore > rightScore
+        end
+        return tostring(left) < tostring(right)
+    end)
+
+    return sorted[slotCount]
 end
 
 ---Unions every pool/floorExtra bucket whose own equip location satisfies
@@ -629,8 +643,11 @@ function Assignment:_ClaimBestCandidate(character, candidates, floor, scorer)
 end
 
 ---Settles one (slot-class, target equip location) pair: walks the warband
----in priority order, greedily giving each eligible character the better of
----their own floor and the best still-unclaimed pool candidate. A claimed
+---in priority order, greedily giving each eligible character the best
+---still-unclaimed pool candidate that beats their floor - once per slot the
+---location has, so a dual-wielder can take a pair of one-handers and anyone
+---can take two rings. Giving out only one item per character used to leave
+---the second warglaive of a pair with nobody to go to. A claimed
 ---pool entry is removed from play for every other target group it could
 ---also have satisfied (e.g. an ambidextrous one-hander claimed while
 ---settling INVTYPE_WEAPON is no longer available when INVTYPE_WEAPONMAINHAND
@@ -640,9 +657,9 @@ end
 ---@param classID number
 ---@param subclassID number
 function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassID)
-    self.settledBestCache[slotClassKey] = self.settledBestCache[slotClassKey] or {}
+    self.settledCache[slotClassKey] = self.settledCache[slotClassKey] or {}
     self.unresolvedCache[slotClassKey] = self.unresolvedCache[slotClassKey] or {}
-    if self.settledBestCache[slotClassKey][targetEquipLoc] then
+    if self.settledCache[slotClassKey][targetEquipLoc] then
         return
     end
 
@@ -650,12 +667,12 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassI
     local floorExtra = UnionMatchingBuckets(self.floorExtra, slotClassKey, targetEquipLoc)
     local unreadableOwners = self:_UnreadableOwnersFor(slotClassKey, targetEquipLoc)
 
-    local settledBest = {}
+    local settled = {}
     local unresolved = {}
 
     for _, character in ipairs(self._sortedCharacters) do
         if not Characters.CanCharacterEquipItemClass(character, classID, subclassID) then
-            settledBest[character] = self.Ineligible
+            settled[character] = self.Ineligible
         else
             local equipped, slotCount = Characters.GetEquippedItemsForEquipLocation(character, targetEquipLoc)
 
@@ -671,15 +688,29 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassI
                 CollectRelevantItems(character, equipped, slotCount, ownFloorExtra, ownCandidates)
             )
 
-            local floor = self:_ReplaceableFloorItem(character, slotClassKey, ownFloorExtra, scorer, equipped, slotCount)
-            local claimed = self:_ClaimBestCandidate(character, ownCandidates, floor, scorer)
-            if claimed then
+            -- Each claim joins what the character holds, raising the floor the
+            -- next one has to beat.
+            local held = HeldItems(character, slotClassKey, ownFloorExtra, equipped, slotCount)
+            local claims = {}
+            for _ = 1, slotCount do
+                local floor = HeldFloor(scorer, held, slotCount)
+                local claimed = self:_ClaimBestCandidate(character, ownCandidates, floor, scorer)
+                if not claimed then
+                    break
+                end
+
                 claimed.claimedBy = character
                 claimed.claimedOverFloor = floor
-                settledBest[character] = claimed.link
-            else
-                settledBest[character] = floor or false
+                table.insert(claims, claimed)
+                table.insert(held, claimed.link)
             end
+
+            settled[character] = {
+                claims = claims,
+                -- What any further item would have to beat once the claims
+                -- are worn.
+                floor = HeldFloor(scorer, held, slotCount),
+            }
 
             if not scorer.resolved or unreadableOwners[character] then
                 unresolved[character] = true
@@ -687,7 +718,7 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc, classID, subclassI
         end
     end
 
-    self.settledBestCache[slotClassKey][targetEquipLoc] = settledBest
+    self.settledCache[slotClassKey][targetEquipLoc] = settled
     self.unresolvedCache[slotClassKey][targetEquipLoc] = unresolved
 end
 
@@ -844,22 +875,25 @@ function Assignment:GetBestCharacterForItem(itemLink, itemLocation)
         return self.Sell
     end
 
-    -- Foreign path: not part of the precomputed pool - compare against every
-    -- character's already-settled best instead of rescanning the warband.
-    local settledBest = self.settledBestCache[slotClassKey][targetEquipLoc]
+    -- Foreign path: not part of the precomputed pool - compare against the
+    -- floor every character is left with once their claims are worn, instead
+    -- of rescanning the warband. The floor is the slot this item would
+    -- actually replace.
+    local settled = self.settledCache[slotClassKey][targetEquipLoc]
     for _, character in ipairs(self._sortedCharacters) do
         if unresolved[character] then
             return self.Pending
         end
 
-        local best = settledBest[character]
-        if best ~= self.Ineligible then
-            local scorer = self:_BuildScorerForCharacter(character, { itemLink, best or nil })
-            local comparison = CompareWithScorer(scorer, itemLink, best)
+        local result = settled[character]
+        if result ~= self.Ineligible then
+            local floor = result.floor
+            local scorer = self:_BuildScorerForCharacter(character, { itemLink, floor })
+            local comparison = CompareWithScorer(scorer, itemLink, floor)
             if comparison == nil then
                 return self.Pending
             elseif comparison == 1 then
-                return self:BuildUpgradeInfo(character, itemLink, best)
+                return self:BuildUpgradeInfo(character, itemLink, floor)
             end
         end
     end
@@ -1087,39 +1121,52 @@ function Assignment:ExplainItem(itemLink)
     explanation.slotClassKey = slotClassKey
     self:SettleGroup(slotClassKey, explanation.equipLoc, classID, subclassID)
 
-    local settledBest = self.settledBestCache[slotClassKey][explanation.equipLoc]
+    local settled = self.settledCache[slotClassKey][explanation.equipLoc]
     local unresolved = self.unresolvedCache[slotClassKey][explanation.equipLoc]
     local candidates = UnionMatchingBuckets(self.pool, slotClassKey, explanation.equipLoc)
     local floorExtra = UnionMatchingBuckets(self.floorExtra, slotClassKey, explanation.equipLoc)
 
+    -- Judged by instance, not by link: two copies of the same item share one
+    -- link but are claimed independently, so "someone claimed this link" says
+    -- nothing about the copy being asked about.
+    local hoveredEntry = self:_FindEntryForHoveredItem(itemLink, nil)
+
     for rank, character in ipairs(self._sortedCharacters) do
+        local result = settled[character]
         local row = {
             rank = rank,
             character = character,
             displayName = Characters.GetDisplayName(character),
             isCurrent = character == DataStore.ThisCharKey,
             unresolved = unresolved[character] == true,
-            settled = settledBest[character],
+            settled = result,
         }
 
-        if settledBest[character] == self.Ineligible then
+        if result == self.Ineligible then
             row.eligible = false
         else
             row.eligible = true
 
             local equipped, slotCount = Characters.GetEquippedItemsForEquipLocation(character, explanation.equipLoc)
             local relevant = CollectRelevantItems(character, equipped, slotCount, floorExtra, candidates)
+            for _, claimed in ipairs(result.claims) do
+                table.insert(relevant, claimed.link)
+            end
             table.insert(relevant, itemLink)
 
             local scorer = self:_BuildScorerForCharacter(character, relevant)
             row.basis = scorer.basis
             row.scaleName = scorer.scaleName
 
-            row.floor = self:_ReplaceableFloorItem(character, slotClassKey, floorExtra, scorer, equipped, slotCount)
+            row.isWinner = hoveredEntry ~= nil and hoveredEntry.claimedBy == character
+            if row.isWinner then
+                row.floor = hoveredEntry.claimedOverFloor
+            else
+                row.floor = result.floor
+            end
             row.floorScore = row.floor and scorer.scoreOf(row.floor)
             row.itemScore = scorer.scoreOf(itemLink)
             row.beatsFloor = CompareWithScorer(scorer, itemLink, row.floor)
-            row.isWinner = settledBest[character] == itemLink
         end
 
         table.insert(explanation.rows, row)
@@ -1260,7 +1307,7 @@ function Assignment:Reset()
     self.pool = {}
     self.floorExtra = {}
     self.entriesByLink = {}
-    self.settledBestCache = {}
+    self.settledCache = {}
     self.unresolvedCache = {}
     self.unresolvedOwners = {}
     self._sortedCharacters = {}

@@ -286,10 +286,32 @@ SetSpecUsesShield(Spec.ProtectionPaladin)
 SetSpecUsesShield(Spec.Elemental)
 SetSpecUsesShield(Spec.RestorationShaman)
 
+-- Specs that wield a one-hander in each hand, so a one-handed weapon has two
+-- slots to go into rather than just the main hand. Read off the same
+-- "Preferred Weapon(s)" text as above: every spec whose clause says "Dual",
+-- lists only one-handers without a shield or off-hand, or is a Demon Hunter
+-- (warglaives come in pairs). Brewmaster is included because its preferred
+-- staff/polearm is a two-hander and its one-handed alternative is dual-wielded.
+local SpecDualWields = {}
+local ClassDualWields = {}
+Data.SpecDualWields = SpecDualWields
+Data.ClassDualWields = ClassDualWields
+
+for _, specID in ipairs({
+    Spec.Havoc, Spec.Vengeance, Spec.Devourer,
+    Spec.Assassination, Spec.Outlaw, Spec.Subtlety,
+    Spec.Windwalker, Spec.Brewmaster,
+    Spec.Enhancement,
+    Spec.FrostDeathKnight,
+}) do
+    SpecDualWields[specID] = true
+end
+
 -- Union of every spec's preferences, used when a character's spec is unknown.
 for class, specIDs in pairs(SpecsByClass) do
     local weaponSubclasses = {}
     local usesShield = false
+    local dualWields = false
 
     for _, specID in ipairs(specIDs) do
         SpecClass[specID] = class
@@ -301,10 +323,15 @@ for class, specIDs in pairs(SpecsByClass) do
         if SpecUsesShield[specID] then
             usesShield = true
         end
+
+        if SpecDualWields[specID] then
+            dualWields = true
+        end
     end
 
     ClassFavoriteWeaponSubclasses[class] = weaponSubclasses
     ClassUsesShield[class] = usesShield
+    ClassDualWields[class] = dualWields
 end
 
 -- Numeric class IDs, Blizzard-stable, used only to talk to Pawn (see

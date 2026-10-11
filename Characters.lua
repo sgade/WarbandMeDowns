@@ -141,6 +141,26 @@ function Characters.IsItemSubclassFavoredBySpec(character, class, itemClassID, i
     return favorites ~= nil and favorites[itemSubclassID] == true
 end
 
+---Whether the character wields a one-handed weapon in each hand, so an
+---ambidextrous one-hander (INVTYPE_WEAPON) has two slots to compete for
+---instead of only the main hand. Same spec-then-class fallback as
+---IsItemSubclassFavoredBySpec.
+---@param character string
+---@return boolean
+function Characters.CanDualWield(character)
+    local _, class = DataStore:GetCharacterClass(character)
+    if not class then
+        return false
+    end
+
+    local specID = Characters.GetKnownSpecID(character)
+    if specID and Data.SpecClass[specID] == class then
+        return Data.SpecDualWields[specID] == true
+    end
+
+    return Data.ClassDualWields[class] == true
+end
+
 -- *** Equip eligibility
 --
 -- CanCharacterEquipItemClass depends only on (character, classID,
@@ -274,7 +294,14 @@ function Characters.GetEquippedItemsForEquipLocation(character, equipLocation)
     elseif equipLocation == "INVTYPE_TRINKET" then
         return { getItem(INVSLOT_TRINKET1), getItem(INVSLOT_TRINKET2) }, 2
     elseif equipLocation == "INVTYPE_WEAPON" then
-        return { getItem(INVSLOT_MAINHAND), getItem(INVSLOT_OFFHAND) }, 2
+        -- Only a dual-wielder has a second slot for a one-hander. For anyone
+        -- else the off hand holds a shield or a held-in-off-hand item, which
+        -- is a different slot-class and would otherwise read as an empty slot
+        -- and make every one-hander look like a free upgrade.
+        if Characters.CanDualWield(character) then
+            return { getItem(INVSLOT_MAINHAND), getItem(INVSLOT_OFFHAND) }, 2
+        end
+        return { getItem(INVSLOT_MAINHAND) }, 1
     else
         return { getItem(slotId) }, 1
     end
