@@ -557,18 +557,10 @@ end
 ---@param compareItemLink ItemInfo
 ---@return boolean
 function Data.AreComparableItemTypes(itemLink, compareItemLink)
-    local itemClassID, itemSubclassID = Data.GetItemClassAndSubclass(itemLink)
-    local compareItemClassID, compareItemSubclassID = Data.GetItemClassAndSubclass(compareItemLink)
+    local itemClassID = Data.GetItemClassAndSubclass(itemLink)
+    local compareItemClassID = Data.GetItemClassAndSubclass(compareItemLink)
 
-    if itemClassID ~= compareItemClassID then
-        return false
-    end
-
-    if itemClassID == ItemClassWeapon then
-        return itemSubclassID == compareItemSubclassID
-    end
-
-    return true
+    return itemClassID == compareItemClassID
 end
 
 ---The item's real, bonus-ID-adjusted item level, or nil when the client has
@@ -765,12 +757,17 @@ end
 ---items are only ever comparable within the same slot-class. Used to bucket
 ---warband items in WarbandMeDowns.Assignment without repeating this pairing
 ---logic there.
+---
+---One key per item class: all armor is one slot-class, and so are all weapons.
+---Which of them a character may actually take is decided per item by
+---WarbandMeDowns.Characters.CanCharacterEquipItem (class, then spec), and the
+---equip location keeps a one-hander from competing with a two-hander. Weapons
+---used to be keyed by subclass as well, which meant a rogue's dagger, sword
+---and mace were never weighed against each other - a better sword than the
+---dagger they wear was "an empty slot", and a worse one too.
 ---@param classID number
----@param subclassID number?
+---@param subclassID number? # unused; kept so callers pass what they have
 ---@return string
 function Data.SlotClassKey(classID, subclassID)
-    if classID == ItemClassWeapon then
-        return classID .. "." .. tostring(subclassID)
-    end
     return tostring(classID)
 end

@@ -304,8 +304,9 @@ function Assignment:_ClassifyItem(character, itemLink, itemLocation, source, con
     -- helm cannot suppress an answer about rings. Both halves of that key come
     -- from GetItemInfoInstant, which is served off the link and needs no
     -- cache; note the slot-class alone is far too coarse, since
-    -- Data.SlotClassKey deliberately collapses every kind of armour into one
-    -- bucket and leaves the equip location to tell a helm from a ring. An
+    -- Data.SlotClassKey deliberately collapses every kind of armour (and every
+    -- kind of weapon) into one bucket and leaves the equip location to tell a
+    -- helm from a ring. An
     -- unknown location falls back to the AnyEquipLocation wildcard.
     --
     -- The IsItemInfoResolved call itself queues the async load, and
@@ -430,7 +431,7 @@ function Assignment:_SortBuckets()
     end
 end
 
--- *** Phase C: lazy, memoized cascading assignment per (slot-class, target equip location)
+-- *** Phase C: cascading assignment per (slot-class, target equip location)
 
 ---@param itemLink ItemInfo
 ---@param slotClassKey string
@@ -445,11 +446,11 @@ end
 ---
 ---A slot contributes nothing when it is empty, or when it holds an item of a
 ---different slot-class. GetEquippedItemsForEquipLocation resolves purely by
----inventory slot (both offhand-slot types for INVTYPE_SHIELD/INVTYPE_HOLDABLE,
----both hands for a dual-wielder's INVTYPE_WEAPON), so it can hand back an item
----that is not comparable at all - a Sword next to an equipped Dagger, a Shield
----where a Holdable is worn. Such an item cannot serve as the bar, and the slot
----is going to be taken over anyway, so it counts as empty.
+---inventory slot (the off hand for INVTYPE_SHIELD/INVTYPE_HOLDABLE, both hands
+---for a dual-wielder's INVTYPE_WEAPON), so it can hand back an item that is
+---not comparable at all - an off-hand weapon where a shield would go. Such an
+---item cannot serve as the bar, and the slot is going to be taken over anyway,
+---so it counts as empty.
 ---
 ---Unsendable bag/bank/mail items are not slots but alternatives: if the
 ---character already owns a better ring they cannot send away, they would wear
@@ -550,9 +551,8 @@ end
 ---Necessary because a slot-class is coarser than equippability: Data.SlotClassKey
 ---collapses *all* armor into one key, so the candidate union for a plate chest
 ---also contains the cloth, leather and cosmetic chests sitting in the warband's
----bags. SettleGroup's group-level check only vets the representative subclass,
----which is not the same question as "can this character wear this particular
----item".
+---bags - and all weapons into another, so a rogue's one-hander union also holds
+---the maces their spec never uses.
 ---
 ---Without this a plate wearer claims the higher-item-level cloth chest, and the
 ---plate upgrade they should have received is left unclaimed and reported as
