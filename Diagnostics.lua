@@ -10,10 +10,12 @@
   it depends on every other character's floor and on which comparison basis
   each of them ended up using. `/wmd why <item link>` prints that table.
 
-  The most useful column is `basis`: "pawn" means Pawn's per-spec score
-  decided it, "ilvl" means the addon fell back to raw item level for that
-  character (Pawn not installed, spec unknown, or Pawn could not score one of
-  the items involved). A warband where every row says "ilvl" while Pawn is
+  Whether the item is an upgrade for a character at all is decided by item
+  level alone (floor ilvl vs item ilvl). The `basis` column says how that
+  character's upgrades were ranked against each other: "pawn" means Pawn's
+  per-spec score, "ilvl" means the addon fell back to raw item level (Pawn not
+  installed, spec unknown, or Pawn could not score one of the candidates
+  involved). A warband where every row says "ilvl" while Pawn is
   installed means the spec lookup is broken again - that exact failure is what
   made every recommendation item-level-only for a long time.
 
@@ -115,13 +117,14 @@ local function PrintExplanation(explanation)
         else
             local usesPawn = row.basis == "pawn"
             WarbandMeDowns:Printf(
-                "  %s%2d%s %-18s %s %s floor %s (%s) vs item %s -- %s",
+                "  %s%2d%s %-18s %s %s floor %s (ilvl %s) vs item ilvl %s, score %s -- %s",
                 ColorMuted, row.rank, ColorReset,
                 row.displayName .. (row.isCurrent and " (you)" or ""),
                 Pad(usesPawn and "pawn" or "ilvl", 4, not usesPawn and ColorWarn or nil),
                 Pad(row.scaleName or "no scale", 22, not row.scaleName and ColorMuted or nil),
                 FormatItem(row.floor),
-                FormatScore(row.floorScore),
+                FormatScore(row.floorItemLevel),
+                FormatScore(row.itemItemLevel),
                 FormatScore(row.itemScore),
                 FormatVerdict(row)
             )

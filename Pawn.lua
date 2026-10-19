@@ -6,10 +6,11 @@
   header covering the whole addon.
 
   WarbandMeDowns does not maintain its own stat priorities. Instead, when Pawn
-  is installed, its own item-scoring calculation is used as the authoritative
-  comparison between two comparable items - item level is only used as a
-  fallback when Pawn isn't installed/usable. See
-  WarbandMeDowns.Assignment.CompareItemsForCharacter. Pawn is not a
+  is installed, its own item-scoring calculation ranks the upgrades available
+  to a character against each other - item level is only used for that as a
+  fallback when Pawn isn't installed/usable. Whether an item is an upgrade at
+  all is never Pawn's call: that takes a strictly higher item level. See the
+  Scoring section of Assignment.lua. Pawn is not a
   required dependency, and its functions are not a documented/versioned API
   - every call below is defensive (existence and type checks, pcall) and
   degrades silently to "no opinion" (the same fallback as an unknown spec)

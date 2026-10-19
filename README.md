@@ -13,8 +13,9 @@ If the current character ends up with the hovered item, the tooltip recommends k
 
 Required character level on an item is intentionally not checked, so gear can be sent to an alt for later leveling.
 
-When two items share the exact same item level, the tie is broken by secondary stats - _but only if Pawn is installed_.
-WarbandMeDowns doesn't keep its own stat preference data; it asks Pawn to score both items against the character's spec and recommends whichever one Pawn values higher.
+An item is only recommended for a character if its item level is strictly higher than what they would replace; an item at the same or a lower item level is never recommended, no matter how much better its secondary stats are.
+When a character has several such upgrades available for one slot, the best one is picked by secondary stats - _but only if Pawn is installed_, otherwise by item level.
+WarbandMeDowns doesn't keep its own stat preference data; it asks Pawn to score the candidates against the character's spec and picks whichever one Pawn values highest.
 
 Armor, shields, and weapons are checked against class-compatible item subclasses. One-handed weapons are compared against both main-hand and off-hand slots when the item can go in either hand. Weapon comparisons only consider the same weapon subclass, so a character's better sword does not block a dagger recommendation.
 

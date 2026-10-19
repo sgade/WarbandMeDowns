@@ -49,10 +49,12 @@
       differs every session, the winner moved around. Anything unreadable now
       yields Assignment.Pending and no tooltip line until the data arrives.
 
-    - Comparisons are transitive. A single *basis* (Pawn score, or item level)
-      is chosen once per character per settlement and used for every
-      comparison in it, instead of falling back per pair. Mixing two orderings
-      in one chain made the greedy winner depend on scan order.
+    - Comparisons are transitive. Whether an item is an upgrade at all is
+      decided by item level alone, and only the ranking among the items that
+      pass uses a *basis* (Pawn score, or item level) - chosen once per
+      character per settlement and used for every comparison in it, instead
+      of falling back per pair. Mixing two orderings in one chain made the
+      greedy winner depend on scan order.
 
     - A hovered item is matched to its scanned instance by bag and slot
       first, and by a normalized link only after that. The tooltip's link and
@@ -111,13 +113,21 @@ Assignment._sortedCharacters = {}
 
 -- *** Scoring
 --
--- A "scorer" fixes one comparison basis for one character for the duration of
--- one decision. Pawn's score is authoritative whenever a scale resolves for
--- the character AND Pawn can score every item involved; otherwise item level
--- is used for all of them. Committing to a single basis up front is what makes
--- the comparison a total order, which _ClaimBestCandidate's greedy scan relies
--- on. Falling back per pair - Pawn for A vs B, item level for B vs C - is not
--- transitive and made the winner depend on iteration order.
+-- Two separate questions, answered on two separate bases:
+--
+--   1. Is this item an upgrade over what the character would replace? Item
+--      level alone, strictly higher (IsItemLevelUpgrade). An item at the same
+--      or a lower item level is never recommended, however much better its
+--      secondary stats are - not even when Pawn prefers it.
+--
+--   2. Which of several upgrades should the character get? A "scorer", which
+--      fixes one comparison basis for one character for the duration of one
+--      decision. Pawn's score is used whenever a scale resolves for the
+--      character AND Pawn can score every candidate; otherwise item level is
+--      used for all of them. Committing to a single basis up front is what
+--      makes the ranking a total order. Falling back per pair - Pawn for A vs
+--      B, item level for B vs C - is not transitive and made the winner
+--      depend on iteration order.
 
 ---@class WarbandMeDownsScorer
 ---@field basis string # "pawn" or "itemlevel"
@@ -213,26 +223,29 @@ local function CompareWithScorer(scorer, itemLinkA, itemLinkB)
 end
 Assignment.CompareWithScorer = CompareWithScorer
 
----Compares two items of the same slot-class for a character. Convenience
----wrapper that builds a throwaway scorer for just this pair; the settlement
----path builds one scorer per character instead, so every comparison inside a
----settlement shares one basis.
----@param character string
----@param itemLinkA ItemInfo?
----@param itemLinkB ItemInfo?
----@return integer? # 1 if A is preferred, -1 if B is preferred, 0 if tied, nil if undecidable
-function Assignment.CompareItemsForCharacter(character, itemLinkA, itemLinkB)
-    local items = {}
-    if itemLinkA then
-        table.insert(items, itemLinkA)
+---Whether an item is an upgrade over the one it would replace: a strictly
+---higher item level, nothing else. Secondary stats - and with them Pawn - play
+---no part here; see the Scoring section above.
+---@param itemLink ItemInfo
+---@param floor ItemInfo? # the item it would replace; nil for an empty slot
+---@return boolean? # nil if either item level cannot be read yet
+local function IsItemLevelUpgrade(itemLink, floor)
+    local itemLevel = Data.GetActualItemLevel(itemLink)
+    if not itemLevel then
+        return nil
     end
-    if itemLinkB then
-        table.insert(items, itemLinkB)
+    if not floor then
+        return true
     end
 
-    local scorer = Assignment:_BuildScorerForCharacter(character, items)
-    return CompareWithScorer(scorer, itemLinkA, itemLinkB)
+    local floorItemLevel = Data.GetActualItemLevel(floor)
+    if not floorItemLevel then
+        return nil
+    end
+
+    return itemLevel > floorItemLevel
 end
+Assignment.IsItemLevelUpgrade = IsItemLevelUpgrade
 
 -- *** Phase A: single full pass over every character's bag/bank/mail items
 
@@ -480,9 +493,10 @@ local function HeldItems(character, slotClassKey, floorExtra, equipped, slotCoun
     return held
 end
 
----The bar a new item has to beat: the worst item the character would still be
----wearing, i.e. the `slotCount`-th best of everything they hold. nil when they
----do not hold enough to fill every slot - an empty slot takes anything.
+---The bar a new item has to beat: the lowest-item-level item the character
+---would still be wearing, i.e. the `slotCount`-th highest item level of
+---everything they hold. nil when they do not hold enough to fill every slot -
+---an empty slot takes anything.
 ---
 ---For a location with more than one slot (two rings, two trinkets, a
 ---dual-wielder's hands) a new item displaces the *worst* of them, so the worst
@@ -490,14 +504,16 @@ end
 ---character with one good ring rejected every ring, and the item cascaded down
 ---the warband to someone who needed it less.
 ---
----An item the scorer cannot read sorts as if it were the best, so a cold cache
----can never make a slot look free; the settlement is flagged unresolved in that
----case anyway.
----@param scorer WarbandMeDownsScorer
+---Ordered by item level, the same basis IsItemLevelUpgrade judges by, so the
+---bar is the item an upgrade would actually replace.
+---
+---An item whose level cannot be read sorts as if it were the best, so a cold
+---cache can never make a slot look free; the settlement is flagged unresolved
+---in that case anyway.
 ---@param held ItemInfo[]
 ---@param slotCount number
 ---@return ItemInfo?
-local function HeldFloor(scorer, held, slotCount)
+local function HeldFloor(held, slotCount)
     if slotCount < 1 or #held < slotCount then
         return nil
     end
@@ -508,8 +524,8 @@ local function HeldFloor(scorer, held, slotCount)
     end
 
     table.sort(sorted, function(left, right)
-        local leftScore = scorer.scoreOf(left) or math.huge
-        local rightScore = scorer.scoreOf(right) or math.huge
+        local leftScore = Data.GetActualItemLevel(left) or math.huge
+        local rightScore = Data.GetActualItemLevel(right) or math.huge
         if leftScore ~= rightScore then
             return leftScore > rightScore
         end
@@ -570,28 +586,14 @@ local function EquippableEntries(character, entries)
     return result
 end
 
----Every item one character's decision in this group depends on, so the scorer
----can commit to a basis that covers all of them at once.
----@param character string
----@param equipped ItemInfo[]
----@param slotCount number
----@param floorExtra table[]
+---Every item the scorer has to rank for one character in this group - the
+---unclaimed candidates, never what they already hold, since held items only
+---ever meet a candidate in IsItemLevelUpgrade. An equipped item Pawn cannot
+---score therefore cannot push the ranking down to item level.
 ---@param candidates table[]
 ---@return ItemInfo[]
-local function CollectRelevantItems(character, equipped, slotCount, floorExtra, candidates)
+local function CollectRankedItems(candidates)
     local items = {}
-
-    for index = 1, slotCount do
-        if equipped[index] then
-            table.insert(items, equipped[index])
-        end
-    end
-
-    for _, entry in ipairs(floorExtra) do
-        if entry.character == character then
-            table.insert(items, entry.link)
-        end
-    end
 
     for _, entry in ipairs(candidates) do
         if not entry.claimedBy then
@@ -629,32 +631,42 @@ function Assignment:_UnreadableOwnersFor(slotClassKey, targetEquipLoc)
     return result
 end
 
----Scans the whole unclaimed candidate pool for the single best entry that
----beats the character's floor, claiming it if found. Unlike a plain
----item-level ordering, a lower-ilvl entry can still win once Pawn score is
----authoritative, so this can't stop early the way an item-level-sorted scan
----could - it has to consider every unclaimed candidate. Correct despite
----comparing entries pairwise against a moving `best` rather than against
----`floor` every time, because a scorer is a single total order: once `best`
----already beats `floor`, anything that beats `best` also beats `floor`.
----@param character string
+---Finds the single best unclaimed entry that is an upgrade over the
+---character's floor. Two steps: IsItemLevelUpgrade decides which entries
+---qualify at all (strictly higher item level), then the scorer ranks those -
+---so Pawn picks between several upgrades but can never make a non-upgrade
+---one. Ties keep the earlier entry, and the candidates are already in
+---CompareEntries order, so the winner is deterministic.
 ---@param candidates table[]
 ---@param floor ItemInfo?
 ---@param scorer WarbandMeDownsScorer
----@return table? claimedEntry
-function Assignment:_ClaimBestCandidate(character, candidates, floor, scorer)
+---@return table? bestEntry
+---@return boolean undecidable # some entry's item level or score could not be read
+function Assignment:_ClaimBestCandidate(candidates, floor, scorer)
     local best = nil
+    local undecidable = false
 
     for _, entry in ipairs(candidates) do
         if not entry.claimedBy then
-            local reference = best and best.link or floor
-            if CompareWithScorer(scorer, entry.link, reference) == 1 then
-                best = entry
+            local isUpgrade = IsItemLevelUpgrade(entry.link, floor)
+            if isUpgrade == nil then
+                undecidable = true
+            elseif isUpgrade then
+                if not best then
+                    best = entry
+                else
+                    local comparison = CompareWithScorer(scorer, entry.link, best.link)
+                    if comparison == nil then
+                        undecidable = true
+                    elseif comparison == 1 then
+                        best = entry
+                    end
+                end
             end
         end
     end
 
-    return best
+    return best, undecidable
 end
 
 ---Settles one (slot-class, target equip location) pair: walks the warband
@@ -714,16 +726,26 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc)
         end
 
         if hasCandidate then
-            local scorer = self:_BuildScorerForCharacter(
-                character,
-                CollectRelevantItems(character, equipped, slotCount, ownFloorExtra, ownCandidates)
-            )
+            local scorer = self:_BuildScorerForCharacter(character, CollectRankedItems(ownCandidates))
+
+            -- The scorer no longer looks at held items, so their readability
+            -- has to be checked here: an unread one sorts as the best in
+            -- HeldFloor and could hide the slot a candidate would replace.
+            local resolved = scorer.resolved
+            for _, link in ipairs(held) do
+                if not Data.IsItemInfoResolved(link) then
+                    resolved = false
+                end
+            end
 
             -- Each claim joins what the character holds, raising the floor the
             -- next one has to beat.
             for _ = 1, slotCount do
-                local floor = HeldFloor(scorer, held, slotCount)
-                local claimed = self:_ClaimBestCandidate(character, ownCandidates, floor, scorer)
+                local floor = HeldFloor(held, slotCount)
+                local claimed, undecidable = self:_ClaimBestCandidate(ownCandidates, floor, scorer)
+                if undecidable then
+                    resolved = false
+                end
                 if not claimed then
                     break
                 end
@@ -734,7 +756,7 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc)
                 table.insert(held, claimed.link)
             end
 
-            if not scorer.resolved then
+            if not resolved then
                 unresolved[character] = true
             end
         end
@@ -754,38 +776,16 @@ function Assignment:SettleGroup(slotClassKey, targetEquipLoc)
     self.unresolvedCache[slotClassKey][targetEquipLoc] = unresolved
 end
 
----The bar a further item has to beat for this character once their claims in
----this group are worn, and the scorer it was decided with.
----@param character string
----@param result table # one settledCache character entry
----@param itemLink ItemInfo # the item being judged, so the scorer covers it
----@return ItemInfo? floor
----@return WarbandMeDownsScorer scorer
-function Assignment:_SettledFloor(character, result, itemLink)
-    local items = { itemLink }
-    for _, link in ipairs(result.held) do
-        table.insert(items, link)
-    end
-
-    local scorer = self:_BuildScorerForCharacter(character, items)
-    return HeldFloor(scorer, result.held, result.slotCount), scorer
-end
-
 -- *** Phase D: exposing results
 
 ---@param character string
 ---@param itemLink ItemInfo
 ---@param compareItem ItemInfo?
----@return [string, number, number, boolean] upgradeInfo character, compareItemLevel, itemLevel, statOnlyUpgrade
+---@return [string, number, number] upgradeInfo character, compareItemLevel, itemLevel
 function Assignment:BuildUpgradeInfo(character, itemLink, compareItem)
     local itemLevel = Data.GetActualItemLevel(itemLink) or 0
     local compareItemLevel = (compareItem and Data.GetActualItemLevel(compareItem)) or 0
-    -- Not a strict item-level increase: either an equal-ilvl stat-only pick,
-    -- or - now that Pawn score can be authoritative - a lower-ilvl item Pawn
-    -- prefers anyway. Tooltip.lua distinguishes the two by re-comparing
-    -- itemLevel to compareItemLevel itself.
-    local statOnlyUpgrade = itemLevel <= compareItemLevel
-    return { character, compareItemLevel, itemLevel, statOnlyUpgrade }
+    return { character, compareItemLevel, itemLevel }
 end
 
 ---@param itemLocation ItemLocation?
@@ -942,11 +942,21 @@ function Assignment:GetBestCharacterForItem(itemLink, itemLocation)
         end
 
         if Characters.CanCharacterEquipItem(character, itemLink) then
-            local floor, scorer = self:_SettledFloor(character, settled[character], itemLink)
-            local comparison = CompareWithScorer(scorer, itemLink, floor)
-            if comparison == nil or not scorer.resolved then
+            local result = settled[character]
+            local floor = HeldFloor(result.held, result.slotCount)
+            local isUpgrade = IsItemLevelUpgrade(itemLink, floor)
+
+            -- An unreadable held item sorts as the best in HeldFloor, so it
+            -- may be the one this would really replace.
+            for _, link in ipairs(result.held) do
+                if not Data.IsItemInfoResolved(link) then
+                    isUpgrade = nil
+                end
+            end
+
+            if isUpgrade == nil then
                 return self.Pending
-            elseif comparison == 1 then
+            elseif isUpgrade then
                 return self:BuildUpgradeInfo(character, itemLink, floor)
             end
         end
@@ -1101,7 +1111,6 @@ function Assignment:ExplainItem(itemLink)
     local settled = self.settledCache[slotClassKey][explanation.equipLoc]
     local unresolved = self.unresolvedCache[slotClassKey][explanation.equipLoc]
     local candidates = UnionMatchingBuckets(self.pool, slotClassKey, explanation.equipLoc)
-    local floorExtra = UnionMatchingBuckets(self.floorExtra, slotClassKey, explanation.equipLoc)
 
     -- Judged by instance, not by link: two copies of the same item share one
     -- link but are claimed independently, so "someone claimed this link" says
@@ -1124,26 +1133,32 @@ function Assignment:ExplainItem(itemLink)
         else
             row.eligible = true
 
-            local equipped, slotCount = Characters.GetEquippedItemsForEquipLocation(character, explanation.equipLoc)
-            local relevant = CollectRelevantItems(character, equipped, slotCount, floorExtra, candidates)
-            for _, link in ipairs(result.held) do
-                table.insert(relevant, link)
-            end
-            table.insert(relevant, itemLink)
+            -- The basis this character's candidates were ranked on. It only
+            -- picks between upgrades; whether this item is one at all is the
+            -- item level check below.
+            local ranked = CollectRankedItems(EquippableEntries(character, candidates))
+            table.insert(ranked, itemLink)
 
-            local scorer = self:_BuildScorerForCharacter(character, relevant)
+            local scorer = self:_BuildScorerForCharacter(character, ranked)
             row.basis = scorer.basis
             row.scaleName = scorer.scaleName
+            row.itemScore = scorer.scoreOf(itemLink)
 
             row.isWinner = hoveredEntry ~= nil and hoveredEntry.claimedBy == character
             if row.isWinner then
                 row.floor = hoveredEntry.claimedOverFloor
             else
-                row.floor = HeldFloor(scorer, result.held, result.slotCount)
+                row.floor = HeldFloor(result.held, result.slotCount)
             end
-            row.floorScore = row.floor and scorer.scoreOf(row.floor)
-            row.itemScore = scorer.scoreOf(itemLink)
-            row.beatsFloor = CompareWithScorer(scorer, itemLink, row.floor)
+            row.floorItemLevel = row.floor and Data.GetActualItemLevel(row.floor)
+            row.itemItemLevel = Data.GetActualItemLevel(itemLink)
+
+            local isUpgrade = IsItemLevelUpgrade(itemLink, row.floor)
+            if isUpgrade == nil then
+                row.beatsFloor = nil
+            else
+                row.beatsFloor = isUpgrade and 1 or -1
+            end
         end
 
         table.insert(explanation.rows, row)

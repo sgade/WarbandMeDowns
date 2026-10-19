@@ -49,16 +49,16 @@ installed - Pawn's entire purpose is scoring items against per-spec stat
 weights (including main stat), so WarbandMeDowns just asks it rather than
 maintaining its own, inherently-theorycrafted copy of the same data.
 
+An item is only ever an upgrade for a character if its item level is
+strictly higher than the item it would replace; Pawn has no say in that.
 When Pawn is installed and a scale resolves for a character (see "Why a
-scale is always available" below), its score is the *authoritative*
-comparison between two items - not just a tie-break. That matters because
-item level alone can't tell a same-slot Intellect item from a Strength one:
-a higher-ilvl item with the wrong main stat can score worse than a
-lower-ilvl item with the right one. Item level is only used as a fallback:
-when Pawn isn't installed, the spec is unknown, or Pawn can't produce a
-score for one of the two specific items being compared. See
-`Assignment.CompareItemsForCharacter` in `Assignment.lua`, the single
-comparator this all funnels through.
+scale is always available" below), its score decides *which* of several
+such upgrades the character gets - that matters because item level alone
+can't tell a same-slot Intellect item from a Strength one. Item level is
+only used for that ranking as a fallback: when Pawn isn't installed, the
+spec is unknown, or Pawn can't produce a score for one of the candidates.
+See `IsItemLevelUpgrade` and `Assignment:_ClaimBestCandidate` in
+`Assignment.lua`.
 
 **Why this is possible**: Pawn exposes genuine global Lua functions other
 addons can call - this isn't reverse-engineering. Pawn's own
