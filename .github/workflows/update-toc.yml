@@ -51,6 +51,7 @@ jobs:
           branch: chore/update-toc
           commit-message: 'chore(toc): update to patch ${{ steps.interface.outputs.patch }}'
           title: 'chore(toc): update to patch ${{ steps.interface.outputs.patch }}'
+          reviewers: sgade
           body: |
             Updates the TOC interface version to `${{ steps.interface.outputs.interface }}` (patch ${{ steps.interface.outputs.patch }}).
 
