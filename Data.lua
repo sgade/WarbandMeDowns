@@ -435,7 +435,7 @@ local function ItemInfo(link)
         return cached
     end
 
-    local name, _, quality, _, _, _, _, _, equipLoc, _, _, _, _, bindType = C_Item.GetItemInfo(link)
+    local name, _, quality, _, minLevel, _, _, _, equipLoc, _, _, _, _, bindType = C_Item.GetItemInfo(link)
     local itemID = InstantInfo(link).itemID
     if not name then
         -- Not cached client-side yet. Asking was the point - it queues the
@@ -464,7 +464,13 @@ local function ItemInfo(link)
     end
 
     local itemLevel = C_Item.GetDetailedItemLevelInfo(link)
-    local info = { quality = quality, equipLoc = equipLoc, bindType = bindType, itemLevel = itemLevel }
+    local info = {
+        quality = quality,
+        minLevel = minLevel,
+        equipLoc = equipLoc,
+        bindType = bindType,
+        itemLevel = itemLevel,
+    }
 
     -- Remembered only when *complete*. GetItemInfo can answer while the
     -- detailed item level has not arrived; that item is still served from this
@@ -680,6 +686,16 @@ local MinRecommendableQuality = (Enum and Enum.ItemQuality and Enum.ItemQuality.
 function Data.GetItemQuality(link)
     local info = ItemInfo(link)
     return info and info.quality
+end
+
+---The character level needed to equip the item. Not part of any
+---recommendation - gear is deliberately sent to alts who will grow into it -
+---only of how the tooltip words one.
+---@param link ItemInfo
+---@return number? minLevel
+function Data.GetItemRequiredLevel(link)
+    local info = ItemInfo(link)
+    return info and info.minLevel
 end
 
 ---Grey/white items are never worth recommending, regardless of bind type.

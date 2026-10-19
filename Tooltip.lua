@@ -7,6 +7,7 @@
 ----------------------------------------------------------------------------]]--
 
 local Characters = WarbandMeDowns.Characters
+local Data = WarbandMeDowns.Data
 
 -- *** Lifecycle
 
@@ -184,6 +185,12 @@ function WarbandMeDowns:OnTooltipSetItem(frame, ...)
 
     local distributionInfo = (function()
         if upgradeInfo[1] == DataStore.ThisCharKey then
+            -- Required level is not checked when assigning, so the item can
+            -- go to the character who will grow into it - including this one.
+            local requiredLevel = Data.GetItemRequiredLevel(itemLink)
+            if requiredLevel and requiredLevel > UnitLevel("player") then
+                return "Save here for later!"
+            end
             return "Use here!"
         else
             return "WarbandMeDowns! Send this to " .. Characters.GetDisplayName(upgradeInfo[1]) .. "."
