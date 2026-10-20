@@ -9,7 +9,7 @@ Recommends alt characters for warbound and bind-on-equip gear.
 WarbandMeDowns computes, for the whole warband, which character should end up with which warbound item. Every character's equipped gear, bags, bank, and mailbox are scanned together, so a spare sitting unlooked-at in one alt's bag can cascade down to a lower-priority alt instead of being invisible to the recommendation.
 
 Characters are ranked in priority order by current level first, then by projected item level - what they would be at having equipped everything usable already in their bags, bank and mail, rather than what they happen to be wearing - and walked in that order for each equipment slot; each eligible character gets the better of their own current gear and the best still-unclaimed candidate for that slot.
-If the current character ends up with the hovered item, the tooltip recommends keeping it; if a different character does, it recommends sending it there; if nobody in the warband ends up wanting it, it recommends selling it.
+If the current character ends up with the hovered item, the tooltip recommends keeping it; if a different character does, it recommends sending it there (and, with Pawn installed, how much better Pawn rates it for that character's spec); if nobody in the warband ends up wanting it, it recommends selling it.
 
 Required character level on an item is intentionally not checked, so gear can be sent to an alt for later leveling.
 

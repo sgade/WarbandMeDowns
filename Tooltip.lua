@@ -197,7 +197,14 @@ function WarbandMeDowns:OnTooltipSetItem(frame, ...)
         end
     end)()
 
-    local upgradeDescription = "Upgrade from " .. upgradeInfo[2] .. " to " .. upgradeInfo[3] .. "."
+    local upgradeDescription = "Upgrade from " .. upgradeInfo[2] .. " to " .. upgradeInfo[3]
+    -- Only for an alt: on this character, Pawn's own tooltip lines already
+    -- say how much better it is.
+    local pawnPercent = upgradeInfo[4]
+    if upgradeInfo[1] ~= DataStore.ThisCharKey and pawnPercent then
+        upgradeDescription = upgradeDescription .. " (" .. pawnPercent .. "% improvement)"
+    end
+    upgradeDescription = upgradeDescription .. "."
 
     frame:AddLine(distributionInfo .. " " .. upgradeDescription, 0, 0.75, 0.33, false)
 end

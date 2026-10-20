@@ -151,3 +151,36 @@ function Pawn.GetPawnItemValue(itemLink, scaleName)
     end
     return value
 end
+
+---How much better Pawn rates an item than the one it would replace, for the
+---character's own spec, in whole percent - the same ratio Pawn shows in its
+---own upgrade tooltips. Nil whenever Pawn has no such opinion: no scale, an
+---empty slot (no baseline to compare with), an item it cannot score, or an
+---item it does not rate higher. Never throws.
+---@param character string
+---@param itemLink ItemInfo
+---@param compareItem ItemInfo? # the item it would replace; nil for an empty slot
+---@return integer?
+function Pawn.GetUpgradePercent(character, itemLink, compareItem)
+    if not compareItem then
+        return nil
+    end
+
+    local scaleName = Pawn.GetPawnScaleNameForCharacter(character)
+    if not scaleName then
+        return nil
+    end
+
+    local value = Pawn.GetPawnItemValue(itemLink, scaleName)
+    local compareValue = Pawn.GetPawnItemValue(compareItem, scaleName)
+    if not value or not compareValue or compareValue <= 0 or value <= compareValue then
+        return nil
+    end
+
+    -- A gain that rounds to nothing would read as "0% improvement".
+    local percent = math.floor((value / compareValue - 1) * 100 + 0.5)
+    if percent <= 0 then
+        return nil
+    end
+    return percent
+end

@@ -781,11 +781,12 @@ end
 ---@param character string
 ---@param itemLink ItemInfo
 ---@param compareItem ItemInfo?
----@return [string, number, number] upgradeInfo character, compareItemLevel, itemLevel
+---@return [string, number, number, integer?] upgradeInfo character, compareItemLevel, itemLevel, pawnPercent
 function Assignment:BuildUpgradeInfo(character, itemLink, compareItem)
     local itemLevel = Data.GetActualItemLevel(itemLink) or 0
     local compareItemLevel = (compareItem and Data.GetActualItemLevel(compareItem)) or 0
-    return { character, compareItemLevel, itemLevel }
+    local pawnPercent = Pawn.GetUpgradePercent(character, itemLink, compareItem)
+    return { character, compareItemLevel, itemLevel, pawnPercent }
 end
 
 ---@param itemLocation ItemLocation?
